@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FF8C00"/>
+      <stop offset="100%" stop-color="#E8390E"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background rounded square -->
+  <rect width="48" height="48" rx="12" fill="url(#bg)"/>
+
+  <!-- Left wheel -->
+  <circle cx="14.5" cy="31" r="8.5" fill="none" stroke="white" stroke-width="2.6" opacity="0.95"/>
+  <!-- Right wheel -->
+  <circle cx="33.5" cy="31" r="8.5" fill="none" stroke="white" stroke-width="2.6" opacity="0.95"/>
+
+  <!-- Hub dots -->
+  <circle cx="14.5" cy="31" r="1.8" fill="white"/>
+  <circle cx="33.5" cy="31" r="1.8" fill="white"/>
+
+  <!-- Frame: seat stay (left bottom stay) -->
+  <line x1="24" y1="15" x2="14.5" y2="31" stroke="white" stroke-width="2.2" stroke-linecap="round"/>
+  <!-- Frame: down tube -->
+  <line x1="24" y1="15" x2="33.5" y2="31" stroke="white" stroke-width="2.2" stroke-linecap="round"/>
+  <!-- Frame: chain stay -->
+  <line x1="19.5" y1="23" x2="33.5" y2="31" stroke="white" stroke-width="1.9" stroke-linecap="round"/>
+
+  <!-- Saddle -->
+  <line x1="18.5" y1="17" x2="26.5" y2="17" stroke="white" stroke-width="2.8" stroke-linecap="round"/>
+
+  <!-- Handlebar -->
+  <line x1="24" y1="15" x2="30.5" y2="13" stroke="white" stroke-width="2.2" stroke-linecap="round"/>
+  <line x1="30.5" y1="13" x2="30.5" y2="16.5" stroke="white" stroke-width="2" stroke-linecap="round"/>
+</svg>

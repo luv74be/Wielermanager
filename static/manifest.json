@@ -1,0 +1,22 @@
+{
+  "name": "Wielermanager",
+  "short_name": "Wielermanager",
+  "description": "Sporza Wielermanager helper app",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#131720",
+  "theme_color": "#FF8C00",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/static/img/logo-180.png",
+      "sizes": "180x180",
+      "type": "image/png"
+    },
+    {
+      "src": "/static/img/logo-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
