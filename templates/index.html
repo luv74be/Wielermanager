@@ -100,7 +100,7 @@
   <script src="/static/js/app.js?v={{ sv }}"></script>
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/static/sw.js')
+      navigator.serviceWorker.register('/sw.js', { scope: '/' })
         .catch(() => {/* stil falen als SW niet beschikbaar */});
     }
   </script>

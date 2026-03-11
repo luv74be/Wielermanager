@@ -361,6 +361,16 @@ def logout():
     session.clear()
     return redirect('/login')
 
+@app.route('/sw.js')
+def service_worker():
+    """Serveer de service worker vanuit de root zodat de scope '/' is."""
+    import flask
+    resp = flask.send_from_directory(app.static_folder, 'sw.js',
+                                     mimetype='application/javascript')
+    resp.headers['Service-Worker-Allowed'] = '/'
+    resp.headers['Cache-Control'] = 'no-cache'
+    return resp
+
 
 @app.after_request
 def add_cors_headers(response):

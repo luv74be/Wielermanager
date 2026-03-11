@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "wielermanager",
+      "runtimeExecutable": "/usr/bin/python3",
+      "runtimeArgs": ["/Users/luchoskens/wielermanager/app.py"],
+      "port": 5050
+    }
+  ]
+}
