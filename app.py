@@ -2225,6 +2225,16 @@ def add_resultaten_bulk(kid):
 @app.route("/api/sporza-session", methods=["GET"])
 def get_sporza_session():
     conn = get_db()
+    # Cleanup: verwijder ongeldige VT/RT waarden (bijv. opgeslagen placeholder '••••••••')
+    for sleutel in ('sporza_cookie_vt', 'sporza_cookie_rt', 'sporza_cookie'):
+        row = conn.execute(
+            "SELECT waarde FROM instellingen WHERE sleutel=?", (sleutel,)
+        ).fetchone()
+        if row and row['waarde'] and not _sanitize_cookie(row['waarde']):
+            conn.execute(
+                "UPDATE instellingen SET waarde='' WHERE sleutel=?", (sleutel,)
+            )
+            conn.commit()
     # Auto-refresh als AT verlopen is én we een RT hebben
     at = _get_sporza_at(conn)
     vt_row = conn.execute(
@@ -2243,12 +2253,24 @@ def get_sporza_session():
     })
 
 
+def _sanitize_cookie(val):
+    """Verwijder niet-ASCII tekens en placeholder-bullets uit cookie-waarden."""
+    if not val:
+        return ''
+    # Verwijder niet-ASCII (bijv. '•' placeholder die per ongeluk opgeslagen werd)
+    ascii_val = val.encode('ascii', errors='ignore').decode('ascii').strip()
+    # Placeholder herkend als reeks bullets
+    if all(c == '\x95' or c == chr(8226) for c in val.strip()):
+        return ''
+    return ascii_val
+
+
 @app.route("/api/sporza-session", methods=["POST"])
 def set_sporza_session():
     data = request.json or {}
-    cookie = data.get("cookie", "").strip()
-    cookie_vt = data.get("cookie_vt", "").strip()
-    cookie_rt = data.get("cookie_rt", "").strip()
+    cookie    = _sanitize_cookie(data.get("cookie", ""))
+    cookie_vt = _sanitize_cookie(data.get("cookie_vt", ""))
+    cookie_rt = _sanitize_cookie(data.get("cookie_rt", ""))
     if not cookie and not cookie_rt:
         return jsonify({"error": "Geen cookie opgegeven"}), 400
     conn = get_db()
