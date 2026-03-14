@@ -2349,7 +2349,7 @@ def _refresh_sporza_at(conn):
         new_at = resp.cookies.get('sporza-site_profile_at') or ''
         if not new_at:
             # Fallback: parse raw Set-Cookie header
-            for hdr in resp.headers.getlist('Set-Cookie'):
+            for hdr in resp.raw.headers.getlist('Set-Cookie'):
                 if 'sporza-site_profile_at=' in hdr:
                     val = hdr.split('sporza-site_profile_at=')[1].split(';')[0].strip()
                     if val and val != 'deleted':
@@ -3397,7 +3397,7 @@ def sporza_refresh_debug():
         )
         nieuwe_at = resp.cookies.get('sporza-site_profile_at') or ''
         if not nieuwe_at:
-            for hdr in resp.headers.getlist('Set-Cookie'):
+            for hdr in resp.raw.headers.getlist('Set-Cookie'):
                 if 'sporza-site_profile_at=' in hdr:
                     val = hdr.split('sporza-site_profile_at=')[1].split(';')[0].strip()
                     if val and val != 'deleted':
@@ -3408,7 +3408,7 @@ def sporza_refresh_debug():
             "http_status": resp.status_code,
             "nieuwe_at_ontvangen": bool(nieuwe_at),
             "response_body": resp.text[:400],
-            "set_cookie_headers": resp.headers.getlist('Set-Cookie'),
+            "set_cookie_headers": resp.raw.headers.getlist('Set-Cookie'),
             "rt_lengte": len(rt),
             "rt_begin": rt[:20] + "…",
         })
