@@ -3411,30 +3411,39 @@ def sporza_verbinding_test():
             **jwt_info,
         })
 
-    # Live test: GET gameteams/lineups (Nokere Koerse = 3305415)
+    # Live test: GET /api/{edition}/cyclists — ondersteunt GET en vereist geldige cookie
     scraper = cloudscraper.create_scraper()
-    test_url = f"{SPORZA_BASE}/api/{SPORZA_EDITION}/gameteams/lineups/3305415"
+    test_url = f"{SPORZA_BASE}/api/{SPORZA_EDITION}/cyclists"
     try:
         r = scraper.get(
             test_url,
             headers={
                 "Cookie": f"sporza-site_profile_at={at}",
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                "Accept": "application/json",
             },
             timeout=12,
         )
         if r.status_code == 200:
             return jsonify({
                 "ok": True,
-                "bericht": "✅ Cookie is geldig! Verbinding met Sporza WM werkt.",
+                "bericht": f"✅ Cookie is geldig! Verbinding met Sporza WM werkt. Verloopt over {jwt_info.get('minuten_resterend','?')} min.",
+                **jwt_info,
+            })
+        elif r.status_code in (401, 403):
+            return jsonify({
+                "ok": False,
+                "stap": "sporza_weigering",
+                "bericht": f"Sporza weigerde de cookie (HTTP {r.status_code}). Sessie verlopen of ongeldige waarde.",
+                "sporza_body": r.text[:200],
                 **jwt_info,
             })
         else:
             return jsonify({
                 "ok": False,
-                "stap": "sporza_weigering",
-                "bericht": f"Sporza antwoordde met HTTP {r.status_code}. Cookie is mogelijk ongeldig of sessie verlopen.",
-                "sporza_body": r.text[:300],
+                "stap": "sporza_fout",
+                "bericht": f"Sporza antwoordde onverwacht met HTTP {r.status_code}.",
+                "sporza_body": r.text[:200],
                 **jwt_info,
             })
     except Exception as e:
