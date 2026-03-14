@@ -3011,13 +3011,26 @@ def _doorzetten_sporza_impl(kid):
         sporza_error = result.get('error') or result.get('message') or result.get('detail') or str(result)[:200]
         verlopen = (post_resp.status_code == 500 and 'fout gelopen' in sporza_error)
         raw_body = post_resp.text[:300]
+
+        # Genereer browser console-commando als fallback
+        import json as _json
+        lineup_json = _json.dumps({"action": "SAVE_LINEUP", "lineup": lineup}, ensure_ascii=False)
+        console_cmd = (
+            f"fetch('/api/{SPORZA_EDITION}/gameteams/lineups/{match_id}',"
+            f"{{method:'POST',headers:{{'Content-Type':'application/json'}},"
+            f"body:JSON.stringify({lineup_json})}}).then(r=>r.json())"
+            f".then(d=>alert(d.success?'✅ Opstelling opgeslagen!':'❌ '+d.error))"
+            f".catch(e=>alert('Fout: '+e))"
+        )
+
         return jsonify({
             "error": (
                 "Sporza sessie verlopen. Stel je cookie opnieuw in via Instellingen."
                 if verlopen else
-                f"HTTP {post_resp.status_code}: {raw_body} | bron={bron_label_riders} | lineup={lineup[:3]}"
+                "Sporza WM blokkeert server-requests. Gebruik het console-commando hieronder."
             ),
             "verlopen": verlopen,
+            "console_command": None if verlopen else console_cmd,
             "debug_status": post_resp.status_code,
             "debug_body": raw_body,
             "bron_riders": bron_label_riders,

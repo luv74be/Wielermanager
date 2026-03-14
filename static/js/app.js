@@ -2089,47 +2089,76 @@ async function _voerDoorzettenUit(kid, koers) {
     <div style="text-align:center;padding:20px;font-size:1.5rem">⏳</div>
   `);
   try {
-    const data = await post(`/api/koersen/${kid}/doorzetten-sporza`, {});
-    openModal(`
-      <div class="modal-title">🚀 Doorzetten geslaagd!</div>
-      <div style="text-align:center;padding:24px 0">
-        <div style="font-size:2.5rem;margin-bottom:12px">✅</div>
-        <div style="font-size:1rem;color:var(--text)">Opstelling voor <strong>${koers?.naam || ''}</strong> is ingevuld op Sporza Wielermanager.</div>
-        <div class="text-muted fs-sm" style="margin-top:8px">${data.lineup_count} renners verwerkt</div>
-      </div>
-      <a href="https://wielermanager.sporza.be/${data.edition || 'vrjr-m-26'}/team" target="_blank"
-         class="btn btn-primary" style="width:100%;text-align:center;text-decoration:none">
-        🌐 Bekijk op Sporza WM
-      </a>
-    `);
-  } catch(e) {
-    const isAuth    = e.message?.includes('Sessie verlopen') || e.message?.includes('cookie');
-    const isSporza  = e.message?.includes('Sporza WM weigerde') || e.message?.includes('fout gelopen') || e.message?.includes('Server Error');
-    const isDeadline = e.message?.includes('deadline') || e.message?.includes('gesloten');
-    let icon  = '⚠️';
-    let title = 'Fout';
-    let extra = '';
+    const res = await fetch(`/api/koersen/${kid}/doorzetten-sporza`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    const data = await res.json();
+
+    if (res.ok && data.ok) {
+      openModal(`
+        <div class="modal-title">🚀 Doorzetten geslaagd!</div>
+        <div style="text-align:center;padding:24px 0">
+          <div style="font-size:2.5rem;margin-bottom:12px">✅</div>
+          <div style="font-size:1rem;color:var(--text)">Opstelling voor <strong>${koers?.naam || ''}</strong> is ingevuld op Sporza Wielermanager.</div>
+          <div class="text-muted fs-sm" style="margin-top:8px">${data.lineup_count} renners verwerkt</div>
+        </div>
+        <a href="https://wielermanager.sporza.be/${data.edition || 'vrjr-m-26'}/team" target="_blank"
+           class="btn btn-primary" style="width:100%;text-align:center;text-decoration:none">
+          🌐 Bekijk op Sporza WM
+        </a>
+      `);
+      return;
+    }
+
+    // Error afhandeling
+    const errorMsg = data.error || `HTTP ${res.status}`;
+    const isAuth = errorMsg.includes('verlopen') || errorMsg.includes('cookie');
+    const consoleCmd = data.console_command;
+
+    let icon = '⚠️', title = 'Fout', extra = '';
+
     if (isAuth) {
       icon = '🔑'; title = 'Sessie verlopen';
       extra = `<button class="btn btn-primary" style="width:100%;margin-top:12px"
         onclick="resetSporzaSession(${kid})">🔑 Nieuwe cookie instellen</button>`;
-    } else if (isSporza) {
-      icon = '🌐'; title = 'Sporza WM server-fout';
-      extra = `<div class="text-muted fs-sm" style="margin-top:10px;padding:10px;background:var(--bg3);border-radius:8px">
-        💡 Dit is een tijdelijke fout aan Sporza's kant. Mogelijke oorzaken:<br>
-        • De <strong>inschrijvingsdeadline</strong> voor deze wedstrijd is gesloten<br>
-        • Sporza WM heeft een <strong>tijdelijke storing</strong><br>
-        Probeer het later opnieuw of controleer <a href="https://wielermanager.sporza.be" target="_blank" style="color:var(--accent)">wielermanager.sporza.be</a> rechtstreeks.
-      </div>`;
+    } else if (consoleCmd) {
+      icon = '🔧'; title = 'Sporza blokkeert server-request';
+      window._sporzaConsoleCmd = consoleCmd;
+      extra = `
+        <div style="margin-top:16px;padding:14px;background:var(--surface);border-radius:8px;text-align:left">
+          <div style="font-weight:600;margin-bottom:10px">Alternatief: via Chrome Console</div>
+          <ol style="font-size:0.85rem;margin:0;padding-left:20px;line-height:1.8">
+            <li>Ga naar <a href="https://wielermanager.sporza.be/vrjr-m-26/team" target="_blank" style="color:var(--accent)">wielermanager.sporza.be</a></li>
+            <li>Druk <kbd style="background:var(--bg3);padding:2px 6px;border-radius:4px;font-size:0.8rem">F12</kbd> → tabblad <strong>Console</strong></li>
+            <li>Klik <strong>📋 Kopieer</strong> hieronder en plak in de console</li>
+            <li>Druk <kbd style="background:var(--bg3);padding:2px 6px;border-radius:4px;font-size:0.8rem">Enter</kbd></li>
+          </ol>
+          <button class="btn btn-primary" style="width:100%;margin-top:12px"
+            onclick="navigator.clipboard.writeText(window._sporzaConsoleCmd).then(()=>{this.textContent='✅ Gekopieerd!';this.style.background='var(--green)'})">
+            📋 Kopieer console-commando
+          </button>
+        </div>`;
     }
+
     openModal(`
       <div class="modal-title">🚀 Doorzetten mislukt</div>
       <div class="empty-state">
         <div class="empty-icon">${icon}</div>
         <div class="empty-title">${title}</div>
-        <div class="empty-text">${e.message}</div>
+        <div class="empty-text">${errorMsg}</div>
       </div>
       ${extra}
+    `);
+  } catch(e) {
+    openModal(`
+      <div class="modal-title">🚀 Doorzetten mislukt</div>
+      <div class="empty-state">
+        <div class="empty-icon">⚠️</div>
+        <div class="empty-title">Netwerkfout</div>
+        <div class="empty-text">${e.message || 'Kon de server niet bereiken'}</div>
+      </div>
     `);
   }
 }
