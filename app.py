@@ -2773,6 +2773,21 @@ def sporza_mini_transfer_tips():
 
 @app.route("/api/koersen/<int:kid>/doorzetten-sporza", methods=["POST"])
 def doorzetten_sporza(kid):
+    import traceback
+    try:
+        return _doorzetten_sporza_impl(kid)
+    except UnicodeEncodeError as e:
+        tb = traceback.format_exc()
+        print(f"[UNICODE ERROR] {e}\n{tb}", flush=True)
+        return make_response(
+            '{"error":"Encoding fout - zie Railway logs","detail":"' +
+            repr(str(e)).replace('"', "'") + '"}',
+            500,
+            {'Content-Type': 'application/json; charset=utf-8'}
+        )
+
+
+def _doorzetten_sporza_impl(kid):
     conn = get_db()
     koers = conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone()
     if not koers:
