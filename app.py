@@ -2327,6 +2327,7 @@ def _refresh_sporza_at(conn):
     ).fetchone()
     rt = (rt_row['waarde'] if rt_row and rt_row['waarde'] else '').strip()
     if not rt:
+        app.logger.warning("_refresh_sporza_at: geen RT opgeslagen")
         return None
     try:
         import requests as _req
@@ -2337,10 +2338,13 @@ def _refresh_sporza_at(conn):
                 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
                               'AppleWebKit/537.36 (KHTML, like Gecko) '
                               'Chrome/131.0.0.0 Safari/537.36',
+                'Origin': 'https://sporza.be',
+                'Referer': 'https://wielermanager.sporza.be/',
             },
             timeout=15,
             allow_redirects=True,
         )
+        app.logger.info(f"_refresh_sporza_at: HTTP {resp.status_code}, body={resp.text[:200]}")
         # Nieuwe AT staat in Set-Cookie header of in cookies van de response
         new_at = resp.cookies.get('sporza-site_profile_at') or ''
         if not new_at:
@@ -2357,9 +2361,11 @@ def _refresh_sporza_at(conn):
                 (new_at,)
             )
             conn.commit()
+            app.logger.info("_refresh_sporza_at: nieuwe AT opgeslagen ✅")
             return new_at
-    except Exception:
-        pass
+        app.logger.warning(f"_refresh_sporza_at: geen AT in response (HTTP {resp.status_code})")
+    except Exception as e:
+        app.logger.error(f"_refresh_sporza_at: fout: {e}")
     return None
 
 
@@ -2369,7 +2375,8 @@ def _get_sporza_at(conn):
         "SELECT waarde FROM instellingen WHERE sleutel='sporza_cookie'"
     ).fetchone()
     at = (row['waarde'] if row and row['waarde'] else '').strip()
-    if at and _jwt_verlopen(at):
+    # Refresh als AT leeg is OF verlopen — zodat ook RT-only setup werkt
+    if (not at) or _jwt_verlopen(at):
         new_at = _refresh_sporza_at(conn)
         if new_at:
             at = new_at
@@ -3379,41 +3386,66 @@ def sporza_verbinding_test():
 
     at = (at_raw['waarde'] if at_raw and at_raw['waarde'] else '').strip()
     rt = (rt_raw['waarde'] if rt_raw and rt_raw['waarde'] else '').strip()
+    rt_aanwezig = bool(rt)
+
+    def _jwt_info(token):
+        try:
+            payload_b64 = token.split('.')[1]
+            payload_b64 += '=' * (-len(payload_b64) % 4)
+            payload = json.loads(base64.b64decode(payload_b64).decode('utf-8'))
+            exp = payload.get('exp', 0)
+            nu  = int(_time.time())
+            return {"exp": exp, "nu": nu, "verlopen": exp < nu,
+                    "minuten_resterend": round((exp - nu) / 60, 1) if exp > nu else 0}
+        except Exception as e:
+            return {"jwt_parse_fout": str(e)}
 
     if not at:
-        return jsonify({"ok": False, "stap": "geen_at", "bericht": "Geen AT cookie opgeslagen in de app."})
+        # Geen AT — probeer auto-refresh via RT
+        if rt_aanwezig:
+            conn2 = get_db()
+            new_at = _refresh_sporza_at(conn2)
+            conn2.close()
+            if new_at:
+                at = new_at
+            else:
+                return jsonify({
+                    "ok": False, "stap": "refresh_mislukt",
+                    "rt_aanwezig": True,
+                    "bericht": "Geen AT opgeslagen. RT gevonden maar auto-refresh mislukte. Controleer de Railway logs voor details.",
+                })
+        else:
+            return jsonify({"ok": False, "stap": "geen_at", "rt_aanwezig": False,
+                            "bericht": "Geen AT én geen RT opgeslagen. Stel beide in via Instellingen."})
 
-    # JWT ontleden
-    jwt_info = {}
-    try:
-        payload_b64 = at.split('.')[1]
-        payload_b64 += '=' * (-len(payload_b64) % 4)
-        payload = json.loads(base64.b64decode(payload_b64).decode('utf-8'))
-        exp = payload.get('exp', 0)
-        nu  = int(_time.time())
-        jwt_info = {
-            "exp": exp,
-            "nu": nu,
-            "verlopen": exp < nu,
-            "minuten_resterend": round((exp - nu) / 60, 1) if exp > nu else 0,
-        }
-    except Exception as e:
-        return jsonify({
-            "ok": False,
-            "stap": "jwt_ongeldig",
-            "bericht": f"Opgeslagen waarde is geen geldig JWT: {e}",
-            "at_begin": at[:40] + "…",
-            "at_lengte": len(at),
-        })
+    jwt = _jwt_info(at)
+    if "jwt_parse_fout" in jwt:
+        return jsonify({"ok": False, "stap": "jwt_ongeldig", "rt_aanwezig": rt_aanwezig,
+                        "bericht": f"Opgeslagen waarde is geen geldig JWT: {jwt['jwt_parse_fout']}",
+                        "at_begin": at[:40] + "…", "at_lengte": len(at)})
 
-    if jwt_info.get("verlopen"):
-        return jsonify({
-            "ok": False,
-            "stap": "verlopen",
-            "bericht": f"JWT is verlopen ({-jwt_info['minuten_resterend']:.0f} min geleden). Stel een verse AT in.",
-            "rt_aanwezig": bool(rt),
-            **jwt_info,
-        })
+    if jwt.get("verlopen"):
+        if rt_aanwezig:
+            # Probeer auto-refresh
+            conn2 = get_db()
+            new_at = _refresh_sporza_at(conn2)
+            conn2.close()
+            if new_at:
+                at = new_at
+                jwt = _jwt_info(at)
+            else:
+                return jsonify({
+                    "ok": False, "stap": "refresh_mislukt", "rt_aanwezig": True,
+                    "bericht": "AT verlopen. RT aanwezig maar auto-refresh mislukte. Controleer Railway logs.",
+                    **jwt,
+                })
+        else:
+            return jsonify({
+                "ok": False, "stap": "verlopen", "rt_aanwezig": False,
+                "bericht": f"AT verlopen ({abs(jwt['minuten_resterend']):.0f} min geleden) en geen RT voor auto-refresh. Voer verse AT in.",
+                **jwt,
+            })
+    jwt_info = jwt
 
     # Live test: GET /api/{edition}/cyclists — ondersteunt GET en vereist geldige cookie
     scraper = cloudscraper.create_scraper()
