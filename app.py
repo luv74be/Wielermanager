@@ -293,7 +293,7 @@ def login_required(f):
 @app.before_request
 def require_login():
     """Bescherm alle routes behalve /login en /static."""
-    if request.path in ('/login', '/logout') or request.path.startswith('/static/'):
+    if request.path in ('/login', '/logout', '/admin/upload-db') or request.path.startswith('/static/'):
         return None
     if not _check_auth():
         if request.path.startswith('/api/'):
