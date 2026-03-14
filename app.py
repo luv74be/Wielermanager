@@ -270,6 +270,7 @@ def _ploeg_match(pcs_norm, db_norm):
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-change-in-production')
+app.config['JSON_AS_ASCII'] = False  # Stuur UTF-8 JSON ipv escaped unicode
 
 # ── Authenticatie ──────────────────────────────────────────────────────────────
 APP_PASSWORD = os.environ.get('APP_PASSWORD', '')  # Leeg = geen auth (lokaal dev)
