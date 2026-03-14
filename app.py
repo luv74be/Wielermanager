@@ -3626,6 +3626,23 @@ Voeg dit blok NIET toe bij algemene vragen of analyses zonder specifieke wissel.
     return jsonify({"text": clean_text, "transfer_suggestion": transfer_suggestion})
 
 
+@app.route('/admin/upload-db', methods=['POST'])
+def upload_db():
+    """Tijdelijk endpoint om de lokale database te uploaden naar de cloud."""
+    pwd = request.headers.get('X-Password', '')
+    if not APP_PASSWORD or pwd != APP_PASSWORD:
+        return jsonify({'error': 'Ongeautoriseerd'}), 401
+    if 'db' not in request.files:
+        return jsonify({'error': 'Geen bestand'}), 400
+    from database import DB_PATH
+    import shutil, tempfile
+    f = request.files['db']
+    tmp = tempfile.mktemp(suffix='.db')
+    f.save(tmp)
+    shutil.move(tmp, DB_PATH)
+    return jsonify({'ok': True, 'path': DB_PATH})
+
+
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5050))
     debug = os.environ.get('FLASK_ENV', 'development') == 'development'
