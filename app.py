@@ -271,6 +271,9 @@ def _ploeg_match(pcs_norm, db_norm):
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-change-in-production')
 app.config['JSON_AS_ASCII'] = False  # Stuur UTF-8 JSON ipv escaped unicode
+app.config['PERMANENT_SESSION_LIFETIME'] = __import__('datetime').timedelta(days=365)
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_SECURE'] = True
 
 # ── Authenticatie ──────────────────────────────────────────────────────────────
 APP_PASSWORD = os.environ.get('APP_PASSWORD', '')  # Leeg = geen auth (lokaal dev)
@@ -308,6 +311,7 @@ def login():
         pwd = request.form.get('password', '')
         if APP_PASSWORD and pwd == APP_PASSWORD:
             session['authenticated'] = True
+            session.permanent = True   # sessie blijft 1 jaar geldig
             return redirect('/')
         error = 'Verkeerd wachtwoord'
     # Eenvoudige login pagina
