@@ -2864,15 +2864,8 @@ def _doorzetten_sporza_impl(kid):
 
     sporza_cookie_vt = (vt_row["waarde"] if vt_row and vt_row["waarde"] else "").strip()
 
-    def _cookie_header():
-        base = f"sporza-site_profile_at={sporza_cookie}"
-        if sporza_cookie_vt:
-            base += f"; sporza-site_profile_vt={sporza_cookie_vt}"
-        return base
-
     def _base_headers(content_type=None):
         h = {
-            "Cookie": _cookie_header(),
             "Origin": SPORZA_BASE,
             "Referer": f"{SPORZA_BASE}/{SPORZA_EDITION}/team",
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -2881,9 +2874,25 @@ def _doorzetten_sporza_impl(kid):
             h["Content-Type"] = content_type
         return h
 
-    # Haal renner-IDs op: eerst via team.data (bevat enkel jouw ~20 gameteam-renners),
-    # fallback naar /api/cyclists als team.data niet beschikbaar is (bijv. bij 500-fout).
+    # Gebruik session cookie jar i.p.v. Cookie header, zodat Sporza session-cookies
+    # automatisch worden bijgehouden en meegestuurd.
     scraper = cloudscraper.create_scraper()
+    scraper.cookies.set('sporza-site_profile_at', sporza_cookie,
+                        domain='wielermanager.sporza.be', path='/')
+    if sporza_cookie_vt:
+        scraper.cookies.set('sporza-site_profile_vt', sporza_cookie_vt,
+                            domain='wielermanager.sporza.be', path='/')
+
+    # Bezoek team-pagina om sessie-cookies te ontvangen (CSRF, wm-session e.d.)
+    try:
+        scraper.get(
+            f"{SPORZA_BASE}/{SPORZA_EDITION}/team",
+            headers={**_base_headers(), "Accept": "text/html,application/xhtml+xml,*/*;q=0.9"},
+            timeout=15,
+        )
+    except Exception:
+        pass  # Geen sessie-cookies → POST wordt alsnog geprobeerd
+
     sporza_riders = {}  # {id: fullName}
     bron_label_riders = "onbekend"
 
@@ -3374,36 +3383,103 @@ def debug_sporza(kid):
 
 @app.route("/api/sporza-lineup-debug/<int:match_id>")
 def sporza_lineup_debug(match_id):
-    """Test een minimale lineup POST naar Sporza en toon de raw response."""
+    """Diagnostisch: test stap voor stap de Sporza session + lineup POST."""
     conn = get_db()
     at = _get_sporza_at(conn)
+    vt_row = conn.execute(
+        "SELECT waarde FROM instellingen WHERE sleutel='sporza_cookie_vt'"
+    ).fetchone()
     conn.close()
+    vt = (vt_row['waarde'] if vt_row and vt_row['waarde'] else '').strip()
+
     if not at:
-        return jsonify({"error": "Geen AT cookie"})
+        return jsonify({"error": "Geen AT cookie beschikbaar"})
+
+    ua = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+    base_h = {
+        "User-Agent": ua,
+        "Origin": SPORZA_BASE,
+        "Referer": f"{SPORZA_BASE}/{SPORZA_EDITION}/team",
+    }
+
+    # Session cookie jar — geen Cookie header, session beheert cookies zelf
     scraper = cloudscraper.create_scraper()
-    url = f"{SPORZA_BASE}/api/{SPORZA_EDITION}/gameteams/lineups/{match_id}"
-    # Stuur minimale test-body (bewust fout) om te zien welke fout Sporza geeft
-    for body in [
-        {"action": "SAVE_LINEUP", "lineup": []},
-        {"action": "GET_LINEUP"},
-    ]:
-        try:
-            r = scraper.post(url, headers={
-                "Cookie": f"sporza-site_profile_at={at}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "Origin": SPORZA_BASE,
-                "Referer": f"{SPORZA_BASE}/{SPORZA_EDITION}/team",
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-            }, json=body, timeout=15)
-            return jsonify({
-                "url": url,
-                "body_sent": body,
-                "http_status": r.status_code,
-                "response": r.text[:500],
-            })
-        except Exception as e:
-            return jsonify({"error": str(e)})
+    scraper.cookies.set('sporza-site_profile_at', at,
+                        domain='wielermanager.sporza.be', path='/')
+    if vt:
+        scraper.cookies.set('sporza-site_profile_vt', vt,
+                            domain='wielermanager.sporza.be', path='/')
+
+    stappen = []
+
+    # Stap 1: GET team-pagina om sessie-cookies te ontvangen
+    try:
+        r = scraper.get(
+            f"{SPORZA_BASE}/{SPORZA_EDITION}/team",
+            headers={**base_h, "Accept": "text/html,application/xhtml+xml,*/*;q=0.9"},
+            timeout=15,
+        )
+        nieuwe_cookies = [k for k in scraper.cookies.keys()
+                          if k not in ('sporza-site_profile_at', 'sporza-site_profile_vt')]
+        stappen.append({
+            "stap": "1. GET /team (sessie opbouwen)",
+            "status": r.status_code,
+            "nieuwe_cookies_ontvangen": nieuwe_cookies,
+        })
+    except Exception as e:
+        stappen.append({"stap": "1. GET /team", "error": str(e)})
+
+    # Stap 2: GET /api/gameteams (bestaat dit endpoint?)
+    try:
+        r = scraper.get(
+            f"{SPORZA_BASE}/api/{SPORZA_EDITION}/gameteams",
+            headers={**base_h, "Accept": "application/json"},
+            timeout=15,
+        )
+        stappen.append({
+            "stap": "2. GET /api/gameteams",
+            "status": r.status_code,
+            "response": r.text[:400],
+        })
+    except Exception as e:
+        stappen.append({"stap": "2. GET /api/gameteams", "error": str(e)})
+
+    lineup_url = f"{SPORZA_BASE}/api/{SPORZA_EDITION}/gameteams/lineups/{match_id}"
+
+    # Stap 3: GET huidige lineup voor dit match_id
+    try:
+        r = scraper.get(
+            lineup_url,
+            headers={**base_h, "Accept": "application/json"},
+            timeout=15,
+        )
+        stappen.append({
+            "stap": f"3. GET lineups/{match_id}",
+            "status": r.status_code,
+            "response": r.text[:400],
+        })
+    except Exception as e:
+        stappen.append({"stap": f"3. GET lineups/{match_id}", "error": str(e)})
+
+    # Stap 4: POST met lege lineup (test of endpoint bereikbaar is)
+    try:
+        r = scraper.post(
+            lineup_url,
+            headers={**base_h, "Content-Type": "application/json", "Accept": "*/*"},
+            json={"action": "SAVE_LINEUP", "lineup": []},
+            timeout=15,
+        )
+        stappen.append({
+            "stap": "4. POST SAVE_LINEUP (lege lineup)",
+            "status": r.status_code,
+            "response": r.text[:500],
+            "alle_cookies_namen": list(scraper.cookies.keys()),
+        })
+    except Exception as e:
+        stappen.append({"stap": "4. POST SAVE_LINEUP", "error": str(e)})
+
+    return jsonify({"lineup_url": lineup_url, "stappen": stappen})
 
 
 @app.route("/api/sporza-refresh-debug")
