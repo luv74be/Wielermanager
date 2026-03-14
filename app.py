@@ -3371,6 +3371,51 @@ def debug_sporza(kid):
         return jsonify({"error": str(e)})
 
 
+@app.route("/api/sporza-refresh-debug")
+def sporza_refresh_debug():
+    """Debug: roep de SSO-refresh aan en toon de ruwe response."""
+    import requests as _req
+    conn = get_db()
+    rt_row = conn.execute(
+        "SELECT waarde FROM instellingen WHERE sleutel='sporza_cookie_rt'"
+    ).fetchone()
+    conn.close()
+    rt = (rt_row['waarde'] if rt_row and rt_row['waarde'] else '').strip()
+    if not rt:
+        return jsonify({"ok": False, "bericht": "Geen RT opgeslagen in de app."})
+    try:
+        resp = _req.get(
+            'https://sporza.be/sso/refresh',
+            headers={
+                'Cookie': f'sporza-site_profile_rt={rt}',
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+                              'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                'Origin': 'https://sporza.be',
+                'Referer': 'https://wielermanager.sporza.be/',
+            },
+            timeout=15, allow_redirects=True,
+        )
+        nieuwe_at = resp.cookies.get('sporza-site_profile_at') or ''
+        if not nieuwe_at:
+            for hdr in resp.headers.getlist('Set-Cookie'):
+                if 'sporza-site_profile_at=' in hdr:
+                    val = hdr.split('sporza-site_profile_at=')[1].split(';')[0].strip()
+                    if val and val != 'deleted':
+                        nieuwe_at = val
+                        break
+        return jsonify({
+            "ok": bool(nieuwe_at),
+            "http_status": resp.status_code,
+            "nieuwe_at_ontvangen": bool(nieuwe_at),
+            "response_body": resp.text[:400],
+            "set_cookie_headers": resp.headers.getlist('Set-Cookie'),
+            "rt_lengte": len(rt),
+            "rt_begin": rt[:20] + "…",
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "fout": str(e)})
+
+
 @app.route("/api/sporza-verbinding-test")
 def sporza_verbinding_test():
     """Test de Sporza WM verbinding: JWT-status + live GET naar gameteams endpoint."""
