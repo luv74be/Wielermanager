@@ -3535,6 +3535,24 @@ def sporza_lineup_debug(match_id):
     except Exception as e:
         stappen.append({"stap": "6. POST teampagina", "error": str(e)})
 
+    # Stap 7: haal team.data op en zoek alle 3305xxx match-IDs
+    import re as _re
+    try:
+        r = scraper.get(
+            f"{SPORZA_BASE}/{SPORZA_EDITION}/team.data",
+            headers={**base_h, "Accept": "*/*"},
+            timeout=15,
+        )
+        gevonden = list(dict.fromkeys(_re.findall(r'3305\d{3}', r.text)))
+        stappen.append({
+            "stap": "7. team.data — match IDs",
+            "status": r.status_code,
+            "alle_3305xxx_ids": gevonden,
+            "ons_match_id_3305415_aanwezig": "3305415" in r.text,
+        })
+    except Exception as e:
+        stappen.append({"stap": "7. team.data match IDs", "error": str(e)})
+
     return jsonify({"lineup_url": lineup_url, "stappen": stappen})
 
 
