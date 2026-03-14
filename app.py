@@ -375,12 +375,17 @@ def service_worker():
 
 @app.after_request
 def add_cors_headers(response):
-    """Sta cross-origin requests toe van Sporza (voor automatisch cookie doorsturen)."""
+    """Sta cross-origin requests toe van Sporza + forceer UTF-8 voor alle JSON responses."""
     origin = request.headers.get('Origin', '')
     if 'sporza.be' in origin or 'localhost' in origin:
         response.headers['Access-Control-Allow-Origin'] = origin
         response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
         response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    # Forceer UTF-8 encoding voor JSON responses (fix voor Werkzeug 3.x op Linux)
+    if response.content_type.startswith('application/json'):
+        data = response.get_data(as_text=True)
+        response.set_data(data.encode('utf-8'))
+        response.content_type = 'application/json; charset=utf-8'
     return response
 
 @app.route('/api/sporza-session', methods=['OPTIONS'])
