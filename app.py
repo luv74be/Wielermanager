@@ -2838,6 +2838,13 @@ def doorzetten_sporza(kid):
             500,
             {'Content-Type': 'application/json; charset=utf-8'}
         )
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(f"[DOORZETTEN CRASH] {e}\n{tb}", flush=True)
+        return jsonify({
+            "error": f"Server-fout bij doorzetten: {str(e)[:200]}",
+            "traceback": tb[:500]
+        }), 500
 
 
 def _doorzetten_sporza_impl(kid):
@@ -3027,47 +3034,70 @@ def _doorzetten_sporza_impl(kid):
     if post_resp.status_code == 401 or post_resp.status_code == 403:
         return jsonify({"error": "Sessie verlopen. Stel je Sporza WM cookie opnieuw in."}), 401
 
+    raw_body = post_resp.text[:500]
+    app.logger.info(f"Sporza POST response: status={post_resp.status_code}, body={raw_body[:200]}")
+
+    # .data endpoints retourneren RSC wire-formaat (geen JSON) bij succes
+    # Check eerst status code: 200/204 = success
     try:
         result = post_resp.json()
     except Exception:
-        result = {}
+        result = None  # RSC-formaat of HTML — geen JSON
 
-    if not result.get("success"):
-        sporza_error = result.get('error') or result.get('message') or result.get('detail') or str(result)[:200]
-        verlopen = (post_resp.status_code == 500 and 'fout gelopen' in sporza_error)
-        raw_body = post_resp.text[:300]
+    # Succes-detectie: status 200/204, of JSON met "success": true
+    is_success = False
+    if post_resp.status_code in (200, 204):
+        if result and isinstance(result, dict):
+            # JSON response — check expliciete success flag
+            is_success = result.get("success", True)  # 200 + JSON = waarschijnlijk OK
+        else:
+            # RSC-formaat bij 200 = success (Sporza retourneert geen error bij 200)
+            is_success = True
+    elif result and isinstance(result, dict) and result.get("success"):
+        is_success = True
 
-        # Genereer browser console-commando als fallback
-        import json as _json
-        lineup_json = _json.dumps({"action": "SAVE_LINEUP", "lineup": lineup}, ensure_ascii=False)
-        console_cmd = (
-            f"fetch('/api/{SPORZA_EDITION}/gameteams/lineups/{actual_match_id}.data',"
-            f"{{method:'POST',headers:{{'Content-Type':'application/json'}},"
-            f"body:JSON.stringify({lineup_json})}}).then(r=>r.json())"
-            f".then(d=>alert(d.success?'✅ Opstelling opgeslagen!':'❌ '+d.error))"
-            f".catch(e=>alert('Fout: '+e))"
-        )
-
+    if is_success:
         return jsonify({
-            "error": (
-                "Sporza sessie verlopen. Stel je cookie opnieuw in via Instellingen."
-                if verlopen else
-                "Sporza WM blokkeert server-requests. Gebruik het console-commando hieronder."
-            ),
-            "verlopen": verlopen,
-            "console_command": None if verlopen else console_cmd,
-            "debug_status": post_resp.status_code,
-            "debug_body": raw_body,
+            "ok": True,
+            "lineup_count": len(lineup),
+            "niet_gevonden": niet_gevonden,
             "bron_riders": bron_label_riders,
-            "lineup_verstuurd": lineup,
-        }), 401 if verlopen else 400
+            "wm_match_id": actual_match_id,
+        })
+
+    # Fout-afhandeling
+    sporza_error = ""
+    if result and isinstance(result, dict):
+        sporza_error = result.get('error') or result.get('message') or result.get('detail') or str(result)[:200]
+    else:
+        sporza_error = raw_body[:200]
+    verlopen = (post_resp.status_code == 500 and 'fout gelopen' in sporza_error)
+
+    # Genereer browser console-commando als fallback
+    import json as _json
+    lineup_json = _json.dumps({"action": "SAVE_LINEUP", "lineup": lineup}, ensure_ascii=False)
+    console_cmd = (
+        f"fetch('/api/{SPORZA_EDITION}/gameteams/lineups/{actual_match_id}.data',"
+        f"{{method:'POST',headers:{{'Content-Type':'application/json'}},"
+        f"body:JSON.stringify({lineup_json})}}).then(r=>r.text())"
+        f".then(d=>{{try{{let j=JSON.parse(d);alert(j.success?'✅ Opgeslagen!':'❌ '+(j.error||d))}}catch(e){{alert('Response: '+d.substring(0,200))}}}}))"
+        f".catch(e=>alert('Fout: '+e))"
+    )
 
     return jsonify({
-        "ok": True,
-        "lineup_count": len(lineup),
-        "niet_gevonden": niet_gevonden,
+        "error": (
+            "Sporza sessie verlopen. Stel je cookie opnieuw in via Instellingen."
+            if verlopen else
+            "Sporza WM blokkeert server-requests. Gebruik het console-commando hieronder."
+        ),
+        "verlopen": verlopen,
+        "console_command": None if verlopen else console_cmd,
+        "debug_status": post_resp.status_code,
+        "debug_body": raw_body,
         "bron_riders": bron_label_riders,
-    })
+        "lineup_verstuurd": lineup,
+        "wm_match_id": actual_match_id,
+    }), 401 if verlopen else 400
 
 
 # ── API: Live wedstrijd ────────────────────────────────────────────────────────
@@ -3573,25 +3603,53 @@ def sporza_lineup_debug(match_id):
     except Exception as e:
         stappen.append({"stap": "6. POST teampagina", "error": str(e)})
 
-    # Stap 7: haal team.data op en zoek alle 3305xxx match-IDs
+    # Stap 7: haal team.data op en zoek alle 3305xxx match-IDs + WM match_id
     import re as _re
+    team_data_text = None
     try:
         r = scraper.get(
             f"{SPORZA_BASE}/{SPORZA_EDITION}/team.data",
             headers={**base_h, "Accept": "*/*"},
             timeout=15,
         )
+        team_data_text = r.text
         gevonden = list(dict.fromkeys(_re.findall(r'3305\d{3}', r.text)))
+        # Probeer _find_wm_match_id voor elke 3305xxx id
+        wm_ids = {}
+        for gid in gevonden:
+            wm_id = _find_wm_match_id(r.text, gid)
+            wm_ids[gid] = wm_id
         stappen.append({
-            "stap": "7. team.data — match IDs",
+            "stap": "7. team.data — match IDs + WM mapping",
             "status": r.status_code,
             "alle_3305xxx_ids": gevonden,
+            "gracenote_to_wm_id": wm_ids,
             "ons_match_id_3305415_aanwezig": "3305415" in r.text,
         })
     except Exception as e:
         stappen.append({"stap": "7. team.data match IDs", "error": str(e)})
 
-    return jsonify({"lineup_url": lineup_url, "stappen": stappen})
+    # Stap 8: POST naar .data URL met ontdekte WM match_id
+    wm_id_for_test = None
+    if team_data_text:
+        wm_id_for_test = _find_wm_match_id(team_data_text, str(match_id))
+    data_lineup_url = f"{SPORZA_BASE}/api/{SPORZA_EDITION}/gameteams/lineups/{wm_id_for_test or match_id}.data"
+    try:
+        r = scraper.post(
+            data_lineup_url,
+            headers={**base_h, "Content-Type": "application/json", "Accept": "*/*"},
+            json=test_body,
+            timeout=15,
+        )
+        stappen.append({
+            "stap": f"8. POST {data_lineup_url} (.data suffix, wm_id={wm_id_for_test})",
+            "status": r.status_code,
+            "response": r.text[:400],
+        })
+    except Exception as e:
+        stappen.append({"stap": "8. POST .data URL", "error": str(e)})
+
+    return jsonify({"lineup_url": lineup_url, "data_lineup_url": data_lineup_url, "wm_match_id": wm_id_for_test, "stappen": stappen})
 
 
 @app.route("/api/sporza-refresh-debug")
