@@ -44,25 +44,25 @@ PCS_SLUGS = {
 
 # ── Sporza Wielermanager match ID mapping ──────────────────────────────────────
 SPORZA_MATCH_IDS = {
-    'Omloop Het Nieuwsblad':    1,
-    'Kuurne-Brussel-Kuurne':    13,
-    'Samyn Classic':            14,
-    'Strade Bianche':           2,
-    'Nokere Koerse':            15,
-    'Bredene Koksijde Classic': 16,
-    'Milaan-Sanremo':           3,
-    'Ronde van Brugge':         4,
-    'E3 Saxo Classic':          5,
-    'In Flanders Fields':       6,
-    'Dwars door Vlaanderen':    7,
-    'Ronde van Vlaanderen':     8,
-    'Scheldeprijs':             17,
-    'Parijs-Roubaix':           9,
-    'Ronde van Limburg':        18,
-    'Brabantse Pijl':           19,
-    'Amstel Gold Race':         10,
-    'Waalse Pijl':              11,
-    'Luik-Bastenaken-Luik':     12,
+    'Omloop Het Nieuwsblad':    3305179,
+    'Kuurne-Brussel-Kuurne':    3305413,
+    'Samyn Classic':            3305491,
+    'Strade Bianche':           3305174,
+    'Nokere Koerse':            3305415,
+    'Bredene Koksijde Classic': 3305417,
+    'Milaan-Sanremo':           3305369,
+    'Ronde van Brugge':         3305186,
+    'E3 Saxo Classic':          3305198,
+    'In Flanders Fields':       3305178,
+    'Dwars door Vlaanderen':    3305169,
+    'Ronde van Vlaanderen':     3305200,
+    'Scheldeprijs':             3305403,
+    'Parijs-Roubaix':           3305168,
+    'Ronde van Limburg':        3305492,
+    'Brabantse Pijl':           3305418,
+    'Amstel Gold Race':         3305192,
+    'Waalse Pijl':              3305188,
+    'Luik-Bastenaken-Luik':     3305197,
 }
 
 SPORZA_BASE = 'https://wielermanager.sporza.be'
@@ -2848,6 +2848,9 @@ def _doorzetten_sporza_impl(kid):
     if not sporza_cookie:
         return jsonify({"error": "Sporza WM sessie niet ingesteld. Stel eerst je cookie in."}), 401
 
+    if _jwt_verlopen(sporza_cookie):
+        return jsonify({"error": "Sporza sessie verlopen. Stel je cookie opnieuw in via Instellingen.", "verlopen": True}), 401
+
     sporza_cookie_vt = (vt_row["waarde"] if vt_row and vt_row["waarde"] else "").strip()
 
     def _cookie_header():
@@ -2987,11 +2990,18 @@ def _doorzetten_sporza_impl(kid):
     if not result.get("success"):
         # Geef volledige debug-info terug zodat we kunnen zien wat Sporza zegt
         sporza_error = result.get('error') or result.get('message') or result.get('detail') or str(result)[:200]
+        # HTTP 500 + "Er is iets fout gelopen" = ongeldige cookie (Sporza valideert niet via 401)
+        verlopen = (post_resp.status_code == 500 and 'fout gelopen' in sporza_error)
         return jsonify({
-            "error": f"Sporza WM weigerde de lineup (HTTP {post_resp.status_code}): {sporza_error}",
+            "error": (
+                "Sporza sessie verlopen. Stel je cookie opnieuw in via Instellingen."
+                if verlopen else
+                f"Sporza WM weigerde de lineup (HTTP {post_resp.status_code}): {sporza_error}"
+            ),
+            "verlopen": verlopen,
             "debug_status": post_resp.status_code,
             "debug_body": post_resp.text[:500],
-        }), 400
+        }), 401 if verlopen else 400
 
     return jsonify({
         "ok": True,
