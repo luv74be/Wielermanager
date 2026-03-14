@@ -3372,6 +3372,40 @@ def debug_sporza(kid):
         return jsonify({"error": str(e)})
 
 
+@app.route("/api/sporza-lineup-debug/<int:match_id>")
+def sporza_lineup_debug(match_id):
+    """Test een minimale lineup POST naar Sporza en toon de raw response."""
+    conn = get_db()
+    at = _get_sporza_at(conn)
+    conn.close()
+    if not at:
+        return jsonify({"error": "Geen AT cookie"})
+    scraper = cloudscraper.create_scraper()
+    url = f"{SPORZA_BASE}/api/{SPORZA_EDITION}/gameteams/lineups/{match_id}"
+    # Stuur minimale test-body (bewust fout) om te zien welke fout Sporza geeft
+    for body in [
+        {"action": "SAVE_LINEUP", "lineup": []},
+        {"action": "GET_LINEUP"},
+    ]:
+        try:
+            r = scraper.post(url, headers={
+                "Cookie": f"sporza-site_profile_at={at}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Origin": SPORZA_BASE,
+                "Referer": f"{SPORZA_BASE}/{SPORZA_EDITION}/team",
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+            }, json=body, timeout=15)
+            return jsonify({
+                "url": url,
+                "body_sent": body,
+                "http_status": r.status_code,
+                "response": r.text[:500],
+            })
+        except Exception as e:
+            return jsonify({"error": str(e)})
+
+
 @app.route("/api/sporza-refresh-debug")
 def sporza_refresh_debug():
     """Debug: roep de SSO-refresh aan en toon de ruwe response."""
