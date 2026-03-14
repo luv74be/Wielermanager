@@ -2999,19 +2999,20 @@ def _doorzetten_sporza_impl(kid):
         result = {}
 
     if not result.get("success"):
-        # Geef volledige debug-info terug zodat we kunnen zien wat Sporza zegt
         sporza_error = result.get('error') or result.get('message') or result.get('detail') or str(result)[:200]
-        # HTTP 500 + "Er is iets fout gelopen" = ongeldige cookie (Sporza valideert niet via 401)
         verlopen = (post_resp.status_code == 500 and 'fout gelopen' in sporza_error)
+        # Toon volledige body in de foutmelding zodat we kunnen debuggen
+        raw_body = post_resp.text[:300]
         return jsonify({
             "error": (
                 "Sporza sessie verlopen. Stel je cookie opnieuw in via Instellingen."
                 if verlopen else
-                f"Sporza WM weigerde de lineup (HTTP {post_resp.status_code}): {sporza_error}"
+                f"HTTP {post_resp.status_code}: {raw_body}"
             ),
             "verlopen": verlopen,
             "debug_status": post_resp.status_code,
-            "debug_body": post_resp.text[:500],
+            "debug_body": raw_body,
+            "lineup_verstuurd": lineup,
         }), 401 if verlopen else 400
 
     return jsonify({
