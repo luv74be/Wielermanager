@@ -3462,22 +3462,78 @@ def sporza_lineup_debug(match_id):
     except Exception as e:
         stappen.append({"stap": f"3. GET lineups/{match_id}", "error": str(e)})
 
-    # Stap 4: POST met lege lineup (test of endpoint bereikbaar is)
+    test_body = {"action": "SAVE_LINEUP", "lineup": []}
+
+    # Stap 4a: POST naar /api/.../lineups/{match_id} met Accept: */*
     try:
         r = scraper.post(
             lineup_url,
             headers={**base_h, "Content-Type": "application/json", "Accept": "*/*"},
-            json={"action": "SAVE_LINEUP", "lineup": []},
+            json=test_body,
             timeout=15,
         )
         stappen.append({
-            "stap": "4. POST SAVE_LINEUP (lege lineup)",
+            "stap": f"4a. POST {lineup_url} (Accept: */*)",
             "status": r.status_code,
-            "response": r.text[:500],
-            "alle_cookies_namen": list(scraper.cookies.keys()),
+            "response": r.text[:400],
         })
     except Exception as e:
-        stappen.append({"stap": "4. POST SAVE_LINEUP", "error": str(e)})
+        stappen.append({"stap": "4a. POST /api/lineups (Accept */*)", "error": str(e)})
+
+    # Stap 4b: POST naar /api/.../lineups/{match_id} met Accept: text/x-component (React Router RSC)
+    try:
+        r = scraper.post(
+            lineup_url,
+            headers={**base_h, "Content-Type": "application/json",
+                     "Accept": "text/x-component"},
+            json=test_body,
+            timeout=15,
+        )
+        stappen.append({
+            "stap": f"4b. POST {lineup_url} (Accept: text/x-component)",
+            "status": r.status_code,
+            "response": r.text[:400],
+        })
+    except Exception as e:
+        stappen.append({"stap": "4b. POST /api/lineups (RSC)", "error": str(e)})
+
+    # Stap 5: POST naar de hoofdpagina (/<edition>) — React Router stuurt form-actions hier naartoe
+    edition_url = f"{SPORZA_BASE}/{SPORZA_EDITION}"
+    try:
+        r = scraper.post(
+            edition_url,
+            headers={**base_h, "Content-Type": "application/json",
+                     "Accept": "text/x-component",
+                     "Referer": f"{SPORZA_BASE}/{SPORZA_EDITION}"},
+            json=test_body,
+            timeout=15,
+        )
+        stappen.append({
+            "stap": f"5. POST {edition_url} (hoofdpagina, RSC accept)",
+            "status": r.status_code,
+            "response": r.text[:400],
+        })
+    except Exception as e:
+        stappen.append({"stap": "5. POST hoofdpagina", "error": str(e)})
+
+    # Stap 6: POST naar /<edition>/team (teampagina als action-url)
+    team_url = f"{SPORZA_BASE}/{SPORZA_EDITION}/team"
+    try:
+        r = scraper.post(
+            team_url,
+            headers={**base_h, "Content-Type": "application/json",
+                     "Accept": "text/x-component",
+                     "Referer": team_url},
+            json=test_body,
+            timeout=15,
+        )
+        stappen.append({
+            "stap": f"6. POST {team_url} (teampagina, RSC accept)",
+            "status": r.status_code,
+            "response": r.text[:400],
+        })
+    except Exception as e:
+        stappen.append({"stap": "6. POST teampagina", "error": str(e)})
 
     return jsonify({"lineup_url": lineup_url, "stappen": stappen})
 
