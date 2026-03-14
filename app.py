@@ -69,6 +69,26 @@ SPORZA_BASE = 'https://wielermanager.sporza.be'
 SPORZA_EDITION = 'vrjr-m-26'
 
 
+def _find_wm_match_id(data_text, gracenote_id):
+    """Zoek het WM match-nummer (1-50) bij een Gracenote race-ID in RSC team.data.
+
+    In de React Flight response staat race-data als: },<matchId>,...,<gracenoteId>,...
+    Het matchId is het kleine volgnummer dat Sporza intern gebruikt in de URL.
+    """
+    gid = str(gracenote_id)
+    pos = data_text.find(gid)
+    if pos < 0:
+        return None
+    # Zoek in de 500 tekens vóór het Gracenote ID naar },<num>, patronen
+    context = data_text[max(0, pos - 500):pos]
+    matches = re.findall(r'},(\d{1,3}),', context)
+    # Filter op redelijke match_id waarden (1-50)
+    candidates = [int(m) for m in matches if 1 <= int(m) <= 50]
+    if candidates:
+        return candidates[-1]  # dichtstbijzijnde vóór het Gracenote ID
+    return None
+
+
 def _parse_sporza_riders(data_text):
     """Extract rider ID → fullName from a Sporza WM .data (React Flight) response."""
     riders = {}
@@ -2897,6 +2917,7 @@ def _doorzetten_sporza_impl(kid):
     bron_label_riders = "onbekend"
 
     team_data_url = f"{SPORZA_BASE}/{SPORZA_EDITION}/team.data"
+    wm_match_id = None
     try:
         team_resp = scraper.get(team_data_url, headers=_base_headers(), timeout=20)
         if team_resp.status_code in (401, 403):
@@ -2904,6 +2925,8 @@ def _doorzetten_sporza_impl(kid):
         if team_resp.status_code == 200:
             sporza_riders = _parse_sporza_riders(team_resp.text)
             bron_label_riders = "team.data"
+            # Zoek het WM match-nummer (klein volgnummer) voor deze koers
+            wm_match_id = _find_wm_match_id(team_resp.text, match_id)
     except Exception:
         pass  # val terug op cyclists API
 
@@ -2987,8 +3010,10 @@ def _doorzetten_sporza_impl(kid):
             "error": f"Ongeldige lineup: {len(captains)} captain(s), {len(normals)} normal, {len(subs)} substitute. Verwacht: 1/11/8."
         }), 400
 
-    # POST naar Sporza WM
-    post_url = f"{SPORZA_BASE}/api/{SPORZA_EDITION}/gameteams/lineups/{match_id}"
+    # POST naar Sporza WM — gebruik WM match_id (klein volgnummer) + .data suffix
+    actual_match_id = wm_match_id if wm_match_id else match_id
+    post_url = f"{SPORZA_BASE}/api/{SPORZA_EDITION}/gameteams/lineups/{actual_match_id}.data"
+    app.logger.info(f"Sporza POST: gracenote={match_id}, wm_match_id={wm_match_id}, url={post_url}")
     try:
         post_resp = scraper.post(
             post_url,
@@ -3016,7 +3041,7 @@ def _doorzetten_sporza_impl(kid):
         import json as _json
         lineup_json = _json.dumps({"action": "SAVE_LINEUP", "lineup": lineup}, ensure_ascii=False)
         console_cmd = (
-            f"fetch('/api/{SPORZA_EDITION}/gameteams/lineups/{match_id}',"
+            f"fetch('/api/{SPORZA_EDITION}/gameteams/lineups/{actual_match_id}.data',"
             f"{{method:'POST',headers:{{'Content-Type':'application/json'}},"
             f"body:JSON.stringify({lineup_json})}}).then(r=>r.json())"
             f".then(d=>alert(d.success?'✅ Opstelling opgeslagen!':'❌ '+d.error))"
