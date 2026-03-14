@@ -3001,17 +3001,17 @@ def _doorzetten_sporza_impl(kid):
     if not result.get("success"):
         sporza_error = result.get('error') or result.get('message') or result.get('detail') or str(result)[:200]
         verlopen = (post_resp.status_code == 500 and 'fout gelopen' in sporza_error)
-        # Toon volledige body in de foutmelding zodat we kunnen debuggen
         raw_body = post_resp.text[:300]
         return jsonify({
             "error": (
                 "Sporza sessie verlopen. Stel je cookie opnieuw in via Instellingen."
                 if verlopen else
-                f"HTTP {post_resp.status_code}: {raw_body}"
+                f"HTTP {post_resp.status_code}: {raw_body} | bron={bron_label_riders} | lineup={lineup[:3]}"
             ),
             "verlopen": verlopen,
             "debug_status": post_resp.status_code,
             "debug_body": raw_body,
+            "bron_riders": bron_label_riders,
             "lineup_verstuurd": lineup,
         }), 401 if verlopen else 400
 
