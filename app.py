@@ -3360,6 +3360,87 @@ def debug_sporza(kid):
         return jsonify({"error": str(e)})
 
 
+@app.route("/api/sporza-verbinding-test")
+def sporza_verbinding_test():
+    """Test de Sporza WM verbinding: JWT-status + live GET naar gameteams endpoint."""
+    import base64, time as _time
+    conn = get_db()
+    at_raw = conn.execute(
+        "SELECT waarde FROM instellingen WHERE sleutel='sporza_cookie'"
+    ).fetchone()
+    rt_raw = conn.execute(
+        "SELECT waarde FROM instellingen WHERE sleutel='sporza_cookie_rt'"
+    ).fetchone()
+    conn.close()
+
+    at = (at_raw['waarde'] if at_raw and at_raw['waarde'] else '').strip()
+    rt = (rt_raw['waarde'] if rt_raw and rt_raw['waarde'] else '').strip()
+
+    if not at:
+        return jsonify({"ok": False, "stap": "geen_at", "bericht": "Geen AT cookie opgeslagen in de app."})
+
+    # JWT ontleden
+    jwt_info = {}
+    try:
+        payload_b64 = at.split('.')[1]
+        payload_b64 += '=' * (-len(payload_b64) % 4)
+        payload = json.loads(base64.b64decode(payload_b64).decode('utf-8'))
+        exp = payload.get('exp', 0)
+        nu  = int(_time.time())
+        jwt_info = {
+            "exp": exp,
+            "nu": nu,
+            "verlopen": exp < nu,
+            "minuten_resterend": round((exp - nu) / 60, 1) if exp > nu else 0,
+        }
+    except Exception as e:
+        return jsonify({
+            "ok": False,
+            "stap": "jwt_ongeldig",
+            "bericht": f"Opgeslagen waarde is geen geldig JWT: {e}",
+            "at_begin": at[:40] + "…",
+            "at_lengte": len(at),
+        })
+
+    if jwt_info.get("verlopen"):
+        return jsonify({
+            "ok": False,
+            "stap": "verlopen",
+            "bericht": f"JWT is verlopen ({-jwt_info['minuten_resterend']:.0f} min geleden). Stel een verse AT in.",
+            "rt_aanwezig": bool(rt),
+            **jwt_info,
+        })
+
+    # Live test: GET gameteams/lineups (Nokere Koerse = 3305415)
+    scraper = cloudscraper.create_scraper()
+    test_url = f"{SPORZA_BASE}/api/{SPORZA_EDITION}/gameteams/lineups/3305415"
+    try:
+        r = scraper.get(
+            test_url,
+            headers={
+                "Cookie": f"sporza-site_profile_at={at}",
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+            },
+            timeout=12,
+        )
+        if r.status_code == 200:
+            return jsonify({
+                "ok": True,
+                "bericht": "✅ Cookie is geldig! Verbinding met Sporza WM werkt.",
+                **jwt_info,
+            })
+        else:
+            return jsonify({
+                "ok": False,
+                "stap": "sporza_weigering",
+                "bericht": f"Sporza antwoordde met HTTP {r.status_code}. Cookie is mogelijk ongeldig of sessie verlopen.",
+                "sporza_body": r.text[:300],
+                **jwt_info,
+            })
+    except Exception as e:
+        return jsonify({"ok": False, "stap": "netwerk", "bericht": f"Netwerkfout: {e}"})
+
+
 @app.route("/api/stats")
 def get_stats():
     conn = get_db()

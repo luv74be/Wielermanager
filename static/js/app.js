@@ -2164,6 +2164,37 @@ async function slaSporzaCookieOpInstellingen() {
   }
 }
 
+async function testSporzaVerbinding() {
+  const btn = document.getElementById('test-sporza-btn');
+  const resultDiv = document.getElementById('sporza-test-result');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Testen…'; }
+  if (resultDiv) { resultDiv.style.display = 'none'; }
+  try {
+    const data = await get('/api/sporza-verbinding-test');
+    if (resultDiv) {
+      resultDiv.style.display = 'block';
+      const kleur = data.ok ? 'var(--green)' : 'var(--red)';
+      let extra = '';
+      if (data.minuten_resterend > 0)
+        extra = `<div class="text-muted fs-sm">Cookie verloopt over ${data.minuten_resterend} minuten</div>`;
+      if (data.sporza_body)
+        extra += `<div class="text-muted fs-sm" style="margin-top:4px;word-break:break-all">Sporza: ${data.sporza_body}</div>`;
+      resultDiv.innerHTML = `
+        <div style="padding:10px;border-radius:8px;border:1px solid ${kleur};background:${kleur}22">
+          <div style="color:${kleur};font-weight:600">${data.bericht}</div>
+          ${extra}
+        </div>`;
+    }
+  } catch(e) {
+    if (resultDiv) {
+      resultDiv.style.display = 'block';
+      resultDiv.innerHTML = `<div style="color:var(--red);font-size:0.85rem">Fout: ${e.message}</div>`;
+    }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🔌 Test verbinding'; }
+  }
+}
+
 function switchDetailResultaatTab(tab) {
   document.querySelectorAll('#detail-resultaat-tabs .tab-btn').forEach((b, i) => {
     b.classList.toggle('active', ['bekijk', 'invoer'][i] === tab);
@@ -3040,17 +3071,14 @@ async function renderInstellingen() {
         en je mini-competities te bekijken.
       </div>`}
 
-      <div class="text-muted fs-sm" style="line-height:1.7;margin-bottom:12px">
-        <strong>Hoe cookies ophalen:</strong><br>
-        1. Log in op
-        <a href="https://wielermanager.sporza.be" target="_blank" style="color:var(--accent)">wielermanager.sporza.be</a><br>
-        2. Open DevTools (<kbd style="background:var(--bg3);border:1px solid var(--border);
-           border-radius:3px;padding:1px 5px;font-size:0.8rem">F12</kbd> /
-           <kbd style="background:var(--bg3);border:1px solid var(--border);
-           border-radius:3px;padding:1px 5px;font-size:0.8rem">Cmd+Option+I</kbd>)<br>
-        3. <strong>Application → Cookies → <code style="font-size:0.78rem">https://sporza.be</code></strong><br>
-        4. Kopieer <code style="font-size:0.78rem">sporza-site_profile_rt</code> <em>(aanbevolen)</em> en
-           <code style="font-size:0.78rem">sporza-site_profile_at</code>
+      <div style="background:var(--bg3);border-radius:8px;padding:12px;margin-bottom:12px;font-size:0.82rem;line-height:1.8">
+        <strong>Hoe verse cookies ophalen (Chrome op Mac/PC):</strong><br>
+        1. Open <a href="https://wielermanager.sporza.be" target="_blank" style="color:var(--accent)">wielermanager.sporza.be</a> → log in → druk <kbd style="background:var(--card-bg);border:1px solid var(--border);border-radius:3px;padding:1px 5px">F5</kbd> (pagina herladen)<br>
+        2. Druk <kbd style="background:var(--card-bg);border:1px solid var(--border);border-radius:3px;padding:1px 5px">F12</kbd> → tab <strong>Application</strong> → links: <strong>Cookies</strong><br>
+        3. Klik op <strong><code style="font-size:0.79rem">https://sporza.be</code></strong> (⚠️ niet <em>wielermanager</em>.sporza.be!)<br>
+        4. Zoek <code style="font-size:0.79rem">sporza-site_profile_at</code> → kopieer de <strong>Value</strong> (lang JWT)<br>
+        5. <em>Optioneel:</em> ook <code style="font-size:0.79rem">sporza-site_profile_rt</code> kopiëren → dan werkt auto-refresh 🔄<br>
+        <span style="color:var(--orange)">⚠️ Herlaad de Sporza-pagina (F5) vóór het kopiëren — anders kan de cookie al verlopen zijn!</span>
       </div>
 
       <div class="form-group">
@@ -3078,8 +3106,13 @@ async function renderInstellingen() {
           placeholder="eyJhbGci…" autocomplete="off"
           value="${vtOk ? '••••••••' : ''}" />
       </div>
-      <button class="btn btn-primary" style="width:100%"
-        onclick="slaSporzaCookieOpInstellingen()">💾 Cookies opslaan</button>
+      <div style="display:flex;gap:8px;margin-top:4px">
+        <button class="btn btn-primary" style="flex:1"
+          onclick="slaSporzaCookieOpInstellingen()">💾 Opslaan</button>
+        <button class="btn btn-secondary" id="test-sporza-btn"
+          onclick="testSporzaVerbinding()">🔌 Test verbinding</button>
+      </div>
+      <div id="sporza-test-result" style="margin-top:10px;display:none"></div>
     </div>
 
     <div class="card" style="max-width:480px">
