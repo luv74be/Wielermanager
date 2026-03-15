@@ -1205,9 +1205,11 @@ function renderKoersen() {
           <td onclick="event.stopPropagation()"><div class="flex gap-8">
             <button class="btn btn-sm btn-secondary btn-mob-hide" onclick="openOpstelling(${k.id},'${k.naam.replace(/'/g,"\\'")}')">👥 Opstelling</button>
             <button class="btn btn-sm btn-secondary btn-mob-hide" onclick="openResultaten(${k.id},'${k.naam.replace(/'/g,"\\'")}','${k.soort}')">📝 Resultaten</button>
-            ${!k.afgelopen
-              ? `<button class="btn btn-sm btn-success btn-mob-hide" onclick="markeerAfgelopen(${k.id})">✓ Afgelopen</button>`
-              : `<button class="btn btn-sm btn-secondary btn-mob-hide" onclick="markeerActief(${k.id})" title="Zet terug als komende wedstrijd">↩ Heropen</button>`}
+            ${k.afgelopen === 2
+              ? `<button class="btn btn-sm btn-secondary btn-mob-hide" onclick="markeerAfgelopen(${k.id})" title="Zet terug naar afgelopen">↩ Afgelopen</button>`
+              : k.afgelopen
+                ? `<button class="btn btn-sm btn-secondary btn-mob-hide" onclick="markeerActief(${k.id})" title="Zet terug als komende wedstrijd">↩ Heropen</button>`
+                : `<button class="btn btn-sm btn-success btn-mob-hide" onclick="markeerAfgelopen(${k.id})">✓ Afgelopen</button>`}
             <button class="btn btn-sm btn-danger" onclick="verwijderKoers(${k.id},'${k.naam.replace(/'/g,"\\'")}')">✕</button>
           </div></td>
         </tr>`).join('')}
@@ -1219,7 +1221,7 @@ function renderKoersen() {
     <div class="page-header">
       <div>
         <div class="page-title">Wedstrijden</div>
-        <div class="page-subtitle">${komend.length} komend · ${afgelopen.length} afgelopen · 19 totaal</div>
+        <div class="page-subtitle">${komend.length} komend · ${afgelopen.filter(k=>k.afgelopen===1).length} afgelopen · ${afgelopen.filter(k=>k.afgelopen===2).length} doorgezet · ${state.koersen.length} totaal</div>
       </div>
       <button class="btn btn-primary" onclick="openNieuweKoers()">+ Wedstrijd Toevoegen</button>
     </div>
@@ -1641,9 +1643,11 @@ async function renderKoersDetail() {
         <div class="page-title">${koers.naam}</div>
         <div class="page-subtitle" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
             ${fmtDate(koers.datum)} &nbsp;·&nbsp; ${soortBadge(koers.soort)}
-            &nbsp;·&nbsp; ${koers.afgelopen
-              ? '<span class="badge" style="background:rgba(156,163,175,0.15);color:var(--muted)">✓ Afgelopen</span>'
-              : '<span class="badge" style="background:rgba(74,222,128,0.15);color:var(--green)">Komend</span>'}
+            &nbsp;·&nbsp; ${koers.afgelopen === 2
+              ? '<span class="badge" style="background:rgba(96,165,250,0.15);color:var(--accent)">📤 Doorgezet</span>'
+              : koers.afgelopen
+                ? '<span class="badge" style="background:rgba(156,163,175,0.15);color:var(--muted)">✓ Afgelopen</span>'
+                : '<span class="badge" style="background:rgba(74,222,128,0.15);color:var(--green)">Komend</span>'}
             ${koers.afgelopen && totaalPuntenKoers > 0
               ? `&nbsp;·&nbsp; <span class="badge" style="background:rgba(74,222,128,0.15);color:var(--green);font-weight:700">🏆 ${totaalPuntenKoers} pt</span>`
               : ''}
@@ -1652,11 +1656,13 @@ async function renderKoersDetail() {
       </div>
       <div class="flex gap-8" style="flex-wrap:wrap">
         <button class="btn btn-secondary btn-sm" onclick="openDeelnemers(${kid})">🔍 Deelnemers</button>
-        ${!koers.afgelopen ? `<button class="btn btn-secondary btn-sm" onclick="openDoorzettenSporza(${kid})">🚀 Doorzetten</button>` : ''}
+        ${koers.afgelopen !== 2 ? `<button class="btn btn-secondary btn-sm" onclick="openDoorzettenSporza(${kid})">🚀 Doorzetten</button>` : ''}
         <button class="btn btn-secondary btn-sm" onclick="openUitslagPCS(${kid})">📊 Uitslag</button>
-        ${!koers.afgelopen
-          ? `<button class="btn btn-success btn-sm" onclick="markeerAfgelopen(${kid})">✓ Afgelopen</button>`
-          : `<button class="btn btn-secondary btn-sm" onclick="markeerActief(${kid})">↩ Heropen</button>`}
+        ${koers.afgelopen === 2
+          ? `<button class="btn btn-secondary btn-sm" onclick="markeerAfgelopen(${kid})">↩ Afgelopen</button>`
+          : koers.afgelopen
+            ? `<button class="btn btn-secondary btn-sm" onclick="markeerActief(${kid})">↩ Heropen</button>`
+            : `<button class="btn btn-success btn-sm" onclick="markeerAfgelopen(${kid})">✓ Afgelopen</button>`}
         <button class="btn btn-danger btn-sm" onclick="verwijderKoers(${kid},'${koers.naam.replace(/'/g,"\\'")}')">✕ Verwijder</button>
       </div>
     </div>
@@ -2097,12 +2103,15 @@ async function _voerDoorzettenUit(kid, koers) {
     const data = await res.json();
 
     if (res.ok && data.ok) {
+      // Markeer wedstrijd als "Doorgezet" (status 2)
+      try { await put(`/api/koersen/${kid}`, { afgelopen: 2 }); } catch(_) {}
+      await refreshKoersen();
       openModal(`
         <div class="modal-title">🚀 Doorzetten geslaagd!</div>
         <div style="text-align:center;padding:24px 0">
           <div style="font-size:2.5rem;margin-bottom:12px">✅</div>
           <div style="font-size:1rem;color:var(--text)">Opstelling voor <strong>${koers?.naam || ''}</strong> is ingevuld op Sporza Wielermanager.</div>
-          <div class="text-muted fs-sm" style="margin-top:8px">${data.lineup_count} renners verwerkt</div>
+          <div class="text-muted fs-sm" style="margin-top:8px">${data.lineup_count} renners verwerkt · status → 📤 Doorgezet</div>
         </div>
         <a href="https://wielermanager.sporza.be/${data.edition || 'vrjr-m-26'}/team" target="_blank"
            class="btn btn-primary" style="width:100%;text-align:center;text-decoration:none">
