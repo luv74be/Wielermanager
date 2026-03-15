@@ -16,6 +16,7 @@ const state = {
   geplandTransfers: [],
   transfers: [],
   rennerFilter: { zoek: '', rol: '', sort: 'punten', dir: 'desc' },
+  geselecteerdeRenners: new Set(),  // IDs van renners geselecteerd voor bulk-update
   navHistory: [],   // [{page, label, koersDetailId, rennerDetailId}]
   // AI chat
   chatMessages: [],   // [{role:'user'|'assistant', content:'...', transfer_suggestion?:{...}}]
@@ -913,6 +914,10 @@ function renderRenners() {
   if (f.rol) renners = renners.filter(r => r.rol === f.rol);
   renners = sortTable(renners, f.sort === 'punten' ? 'totaal_punten' : f.sort, f.dir);
 
+  const sel = state.geselecteerdeRenners;
+  const nSel = sel.size;
+  const allZichtbaarGeselecteerd = renners.length > 0 && renners.every(r => sel.has(r.id));
+
   function sortHeader(label, key) {
     const active = f.sort === key;
     const arrow = active ? (f.dir === 'asc' ? ' ↑' : ' ↓') : '';
@@ -925,7 +930,15 @@ function renderRenners() {
         <div class="page-title">Renners Database</div>
         <div class="page-subtitle">${renners.length} van ${state.renners.length} renners</div>
       </div>
-      <button class="btn btn-primary" onclick="openNieuweRenner()">+ Renner Toevoegen</button>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button id="bulk-update-btn" class="btn btn-secondary"
+          onclick="bulkUpdateRenners()"
+          style="${nSel === 0 ? 'display:none' : ''}"
+          title="Update foto, ploeg en prijs voor alle geselecteerde renners via Sporza WM">
+          🔄 Update (<span id="sel-count">${nSel}</span>)
+        </button>
+        <button class="btn btn-primary" onclick="openNieuweRenner()">+ Renner Toevoegen</button>
+      </div>
     </div>
     <div class="filter-bar">
       <input class="search-input" id="renner-zoek-veld" placeholder="Zoek op naam of ploeg..." value="${f.zoek}"
@@ -946,15 +959,25 @@ function renderRenners() {
       <div class="table-wrap">
         <table>
           <thead><tr>
+            <th style="width:28px;padding-right:4px">
+              <input type="checkbox" id="sel-all-renners" title="Selecteer alle zichtbare renners"
+                ${allZichtbaarGeselecteerd ? 'checked' : ''}
+                onchange="toggleAlleRenners(this.checked)" />
+            </th>
             <th></th>${sortHeader('Naam','naam')}<th class="col-mob-hide">Wielerploeg</th><th>Rol</th>
             ${sortHeader('Prijs','prijs')}${sortHeader('Punten','punten')}<th class="col-mob-hide">Ratio</th><th class="col-mob-hide">In Ploeg</th><th></th>
           </tr></thead>
           <tbody>
-            ${renners.length === 0 ? `<tr><td colspan="9"><div class="empty-state">
+            ${renners.length === 0 ? `<tr><td colspan="10"><div class="empty-state">
               <div class="empty-icon">🔍</div><div class="empty-title">Geen renners gevonden</div>
             </div></td></tr>` : renners.map(r => {
               const ratio = r.prijs > 0 ? (r.totaal_punten / r.prijs).toFixed(1) : '0.0';
               return `<tr>
+                <td style="width:28px;padding-right:4px">
+                  <input type="checkbox" class="renner-sel-cb" data-id="${r.id}"
+                    ${sel.has(r.id) ? 'checked' : ''}
+                    onchange="toggleRennerSelectie(${r.id})" />
+                </td>
                 <td style="width:36px;padding-right:0;cursor:pointer" onclick="openRennerDetail(${r.id})">${avatarHtml(r)}</td>
                 <td class="fw-700" style="cursor:pointer" onclick="openRennerDetail(${r.id})">${r.naam}</td>
                 <td class="text-muted fs-sm col-mob-hide"><span style="display:inline-flex;align-items:center;gap:5px">${jerseyHtml(r.ploeg,{size:18})}${r.ploeg}</span></td>
@@ -999,6 +1022,115 @@ async function zoekRennersFilter(val) {
     el.setSelectionRange(val.length, val.length);
   }
 }
+
+// ── Renner selectie helpers ──────────────────────────────────────────────────
+
+function toggleRennerSelectie(id) {
+  if (state.geselecteerdeRenners.has(id)) {
+    state.geselecteerdeRenners.delete(id);
+  } else {
+    state.geselecteerdeRenners.add(id);
+  }
+  // Knop en teller bijwerken zonder volledige re-render
+  const n = state.geselecteerdeRenners.size;
+  const btn = document.getElementById('bulk-update-btn');
+  const cnt = document.getElementById('sel-count');
+  if (btn) btn.style.display = n > 0 ? '' : 'none';
+  if (cnt) cnt.textContent = n;
+  // "Selecteer alles"-checkbox synchroniseren
+  const f = state.rennerFilter;
+  let visible = state.renners.filter(r =>
+    (!f.zoek || r.naam.toLowerCase().includes(f.zoek.toLowerCase()) || r.ploeg.toLowerCase().includes(f.zoek.toLowerCase())) &&
+    (!f.rol || r.rol === f.rol)
+  );
+  const selAll = document.getElementById('sel-all-renners');
+  if (selAll) selAll.checked = visible.length > 0 && visible.every(r => state.geselecteerdeRenners.has(r.id));
+}
+
+function toggleAlleRenners(checked) {
+  const f = state.rennerFilter;
+  const visible = state.renners.filter(r =>
+    (!f.zoek || r.naam.toLowerCase().includes(f.zoek.toLowerCase()) || r.ploeg.toLowerCase().includes(f.zoek.toLowerCase())) &&
+    (!f.rol || r.rol === f.rol)
+  );
+  if (checked) {
+    visible.forEach(r => state.geselecteerdeRenners.add(r.id));
+  } else {
+    visible.forEach(r => state.geselecteerdeRenners.delete(r.id));
+  }
+  renderPage();
+}
+
+async function bulkUpdateRenners() {
+  const ids = Array.from(state.geselecteerdeRenners);
+  if (ids.length === 0) return;
+
+  const rennerMap = Object.fromEntries(state.renners.map(r => [r.id, r.naam]));
+
+  const updateProgress = (current, total, bezig, regels) => {
+    const el = document.getElementById('bulk-progress-body');
+    if (!el) return;
+    const pct = total > 0 ? Math.round(current / total * 100) : 0;
+    el.innerHTML = `
+      <div style="font-size:0.85rem;color:var(--muted);margin-bottom:6px">
+        ${current} / ${total} — ${bezig}
+      </div>
+      <div style="background:var(--bg3);border-radius:6px;height:6px;margin-bottom:14px">
+        <div style="background:var(--accent);height:6px;border-radius:6px;width:${pct}%;transition:width .3s"></div>
+      </div>
+      <div style="max-height:240px;overflow-y:auto;font-size:0.82rem">${regels.join('')}</div>
+    `;
+  };
+
+  openModal(`
+    <div class="modal-title">🔄 Bulk Update — ${ids.length} renner${ids.length !== 1 ? 's' : ''}</div>
+    <div id="bulk-progress-summary" style="font-weight:600;font-size:0.88rem;margin-bottom:10px;display:none"></div>
+    <div id="bulk-progress-body">
+      <div style="color:var(--muted)">Starten…</div>
+    </div>
+    <button id="bulk-close-btn" class="btn btn-primary" style="width:100%;margin-top:14px;display:none"
+      onclick="closeModal();state.geselecteerdeRenners.clear();refreshAll()">
+      ✓ Sluiten &amp; vernieuwen
+    </button>
+  `);
+
+  const regels = [];
+  let gewijzigd = 0;
+
+  for (let i = 0; i < ids.length; i++) {
+    const rid = ids[i];
+    const naam = rennerMap[rid] || `Renner ${rid}`;
+    updateProgress(i, ids.length, `Bezig: ${naam}…`, regels);
+    try {
+      const data = await post(`/api/renners/${rid}/update`, {});
+      const w = data.wijzigingen || {};
+      const changes = [];
+      if (w.foto?.gewijzigd)  changes.push('foto');
+      if (w.ploeg?.gewijzigd) changes.push(`ploeg → <strong>${w.ploeg.nieuw}</strong>`);
+      if (w.prijs?.gewijzigd) changes.push(`prijs → <strong>€${w.prijs.nieuw}M</strong>`);
+      if (changes.length > 0) {
+        regels.push(`<div style="padding:3px 0;color:var(--green)">✓ ${naam}: ${changes.join(', ')}</div>`);
+        gewijzigd++;
+      } else {
+        regels.push(`<div style="padding:3px 0;color:var(--muted)">– ${naam}: geen wijzigingen</div>`);
+      }
+    } catch(e) {
+      regels.push(`<div style="padding:3px 0;color:var(--red)">✗ ${naam}: ${e.message}</div>`);
+    }
+    updateProgress(i + 1, ids.length, i + 1 === ids.length ? 'Klaar!' : '', regels);
+  }
+
+  // Samenvatting tonen
+  const sumEl = document.getElementById('bulk-progress-summary');
+  if (sumEl) {
+    sumEl.textContent = `${gewijzigd} van ${ids.length} renner${ids.length !== 1 ? 's' : ''} bijgewerkt`;
+    sumEl.style.display = '';
+  }
+  const closeBtn = document.getElementById('bulk-close-btn');
+  if (closeBtn) closeBtn.style.display = '';
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 
 async function quickAdd(rid, naam) {
   try {
