@@ -1552,7 +1552,7 @@ async function slaResultatenOp(kid, soort) {
 
   if (!bulk.length) { toast('Geen posities ingevoerd', 'info'); return; }
   try {
-    await post(`/api/koersen/${kid}/resultaten/bulk`, bulk);
+    await post(`/api/koersen/${kid}/resultaten/bulk`, { renners: bulk });
     toast('Resultaten opgeslagen ✅', 'success');
     closeModal(); await refreshAll();
   } catch(e) { toast(e.message, 'error'); }
@@ -2011,8 +2011,9 @@ async function openUitslagPCS(kid) {
         💾 Opslaan &amp; Punten Berekenen
       </button>
     `);
-    // Store renner data globally to avoid JSON quoting issues in onclick
+    // Store renner data + winnaar globally to avoid JSON quoting issues in onclick
     window._uitslagRenners = opstelling.map(r => ({renner_id: r.id, positie: r.positie}));
+    window._uitslagWinnaar = data.winnaar ? { naam: data.winnaar, ploeg: data.winnaar_ploeg || '' } : null;
   } catch(e) {
     openModal(`
       <div class="modal-title">📊 Uitslag</div>
@@ -2039,7 +2040,11 @@ async function slaUitslagPCSop(kid) {
     toast('Geen posities of bonussen om op te slaan', 'info'); return;
   }
   try {
-    await post(`/api/koersen/${kid}/resultaten/bulk`, bulk);
+    await post(`/api/koersen/${kid}/resultaten/bulk`, {
+      renners: bulk,
+      winnaar_naam: window._uitslagWinnaar?.naam || null,
+      winnaar_ploeg: window._uitslagWinnaar?.ploeg || null,
+    });
     toast('Uitslag opgeslagen ✅', 'success');
     closeModal();
     await refreshAll();

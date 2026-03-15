@@ -122,12 +122,13 @@ def init_db():
     except Exception:
         pass  # Kolom bestaat al
 
-    # Migratie: afstand, hoogtemeters, profiel_url en favorieten_json op koersen
+    # Migratie: afstand, hoogtemeters, profiel_url, favorieten_json, winnaar_id op koersen
     for col_sql in [
         "ALTER TABLE koersen ADD COLUMN afstand REAL",
         "ALTER TABLE koersen ADD COLUMN hoogtemeters INTEGER",
         "ALTER TABLE koersen ADD COLUMN profiel_url TEXT",
         "ALTER TABLE koersen ADD COLUMN favorieten_json TEXT",
+        "ALTER TABLE koersen ADD COLUMN winnaar_id INTEGER REFERENCES renners(id)",
     ]:
         try:
             conn.execute(col_sql)

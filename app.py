@@ -1552,16 +1552,8 @@ def get_koersen():
         SELECT k.*,
                COUNT(DISTINCT o.renner_id) as opstelling_aantal,
                COALESCE(SUM(res.punten), 0) as mijn_punten,
-               (SELECT re.foto FROM resultaten r2
-                JOIN opstelling o2 ON o2.renner_id = r2.renner_id AND o2.koers_id = r2.koers_id
-                JOIN renners re ON re.id = r2.renner_id
-                WHERE r2.koers_id = k.id AND r2.positie IS NOT NULL
-                ORDER BY r2.positie ASC LIMIT 1) as winnaar_foto,
-               (SELECT re.naam FROM resultaten r2
-                JOIN opstelling o2 ON o2.renner_id = r2.renner_id AND o2.koers_id = r2.koers_id
-                JOIN renners re ON re.id = r2.renner_id
-                WHERE r2.koers_id = k.id AND r2.positie IS NOT NULL
-                ORDER BY r2.positie ASC LIMIT 1) as winnaar_naam,
+               (SELECT re.foto FROM renners re WHERE re.id = k.winnaar_id) as winnaar_foto,
+               (SELECT re.naam FROM renners re WHERE re.id = k.winnaar_id) as winnaar_naam,
                (SELECT re.foto FROM opstelling op2
                 JOIN renners re ON re.id = op2.renner_id
                 WHERE op2.koers_id = k.id AND op2.is_kopman = 1
@@ -2178,15 +2170,50 @@ def get_resultaten(kid):
     return jsonify([dict(r) for r in resultaten])
 
 
+def _zoek_of_maak_winnaar(conn, winnaar_naam, winnaar_ploeg=''):
+    """Zoek de winnaar in renners op naam. Maak aan als niet gevonden (actief=0)."""
+    alle_renners = conn.execute("SELECT id, naam FROM renners").fetchall()
+
+    # Zoek op naam via _name_match
+    for r in alle_renners:
+        if _name_match(winnaar_naam, {_norm(r['naam'])}):
+            return r['id']
+
+    # Niet gevonden — maak nieuwe renner aan (actief=0 = niet in budget-pool)
+    app.logger.info(f"Winnaar '{winnaar_naam}' niet gevonden, wordt aangemaakt.")
+
+    # Foto ophalen
+    foto = _fetch_foto_wikipedia(winnaar_naam) or _fetch_foto_pcs(winnaar_naam)
+
+    cur = conn.execute(
+        "INSERT INTO renners (naam, ploeg, rol, prijs, actief, foto) VALUES (?,?,?,?,0,?)",
+        (winnaar_naam, winnaar_ploeg or '—', 'allrounder', 0.0, foto)
+    )
+    conn.commit()
+    new_id = cur.lastrowid
+    app.logger.info(f"Winnaar aangemaakt: id={new_id}, naam={winnaar_naam}, foto={'ja' if foto else 'nee'}")
+    return new_id
+
+
 @app.route("/api/koersen/<int:kid>/resultaten/bulk", methods=["POST"])
 def add_resultaten_bulk(kid):
     """
-    Verwacht een lijst van:
-      { renner_id, positie, is_ploegmaat_winnaar (bool) }
-    Kopman wordt bepaald vanuit de opstelling-tabel.
-    Punten worden enkel berekend voor renners in de opstelling.
+    Verwacht een dict met:
+      renners: [{ renner_id, positie, is_ploegmaat_winnaar }]
+      winnaar_naam: str (optioneel, echte winnaar van de koers)
+      winnaar_ploeg: str (optioneel)
+    Of (legacy) een lijst direct.
     """
-    data = request.json
+    payload = request.json
+    if isinstance(payload, list):
+        data = payload
+        winnaar_naam = None
+        winnaar_ploeg = ''
+    else:
+        data = payload.get('renners', [])
+        winnaar_naam = (payload.get('winnaar_naam') or '').strip()
+        winnaar_ploeg = (payload.get('winnaar_ploeg') or '').strip()
+
     conn = get_db()
 
     koers = conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone()
@@ -2239,6 +2266,16 @@ def add_resultaten_bulk(kid):
     except Exception as e:
         conn.close()
         return jsonify({"error": str(e)}), 400
+
+    # ── Echte winnaar opslaan ──────────────────────────────────────────────────
+    if winnaar_naam:
+        try:
+            winnaar_id = _zoek_of_maak_winnaar(conn, winnaar_naam, winnaar_ploeg)
+            if winnaar_id:
+                conn.execute("UPDATE koersen SET winnaar_id=? WHERE id=?", (winnaar_id, kid))
+                conn.commit()
+        except Exception as e:
+            app.logger.warning(f"Kon winnaar niet opslaan: {e}")
 
     conn.close()
     return jsonify({"ok": True})
