@@ -717,6 +717,122 @@ def admin_seed_seizoen(sid):
     })
 
 
+@app.route('/api/admin/renners/sync-sporza', methods=['POST'])
+def admin_sync_renners_sporza():
+    """Haal alle renners op van Sporza WM voor het actieve seizoen.
+
+    Voor elke renner in de Sporza API:
+      - Bestaand (naam-match): update ploeg, prijs en totaal_punten indien gewijzigd.
+      - Onbestaand: voeg toe als nieuwe renner.
+
+    Naam-matching verloopt in twee stappen:
+      1. Exacte genormaliseerde match (accenten/hoofdletters genegeerd).
+      2. Fallback via _name_match() (achternaam + voornaam-initiaal).
+    """
+    err, code = _require_admin()
+    if err: return err, code
+
+    conn = get_db()
+    sid = current_seizoen_id(conn)
+    edition = _get_sporza_edition(conn, sid)
+
+    if not edition or edition in ('', 'onbekend'):
+        conn.close()
+        return jsonify({'error': f'Geen geldig Sporza edition ingesteld voor dit seizoen'}), 400
+
+    # ── 1. Ophalen van Sporza ──────────────────────────────────────────────────
+    try:
+        scraper = cloudscraper.create_scraper()
+        url = f"{SPORZA_BASE}/api/{edition}/cyclists"
+        resp = scraper.get(url, timeout=25)
+        if resp.status_code != 200:
+            conn.close()
+            return jsonify({'error': f'Sporza WM antwoordde met HTTP {resp.status_code}'}), 502
+        cyclists = resp.json().get('cyclists', [])
+    except Exception as e:
+        conn.close()
+        return jsonify({'error': f'Netwerkfout bij ophalen van Sporza: {e}'}), 503
+
+    if not cyclists:
+        conn.close()
+        return jsonify({'error': 'Sporza stuurde een lege rennerlijst terug'}), 404
+
+    # ── 2. Bestaande renners laden ─────────────────────────────────────────────
+    bestaande = conn.execute(
+        "SELECT id, naam, ploeg, prijs, totaal_punten FROM renners WHERE seizoen_id=?", (sid,)
+    ).fetchall()
+
+    # Exacte norm → id
+    norm_to_id = {_norm(r['naam']): r['id'] for r in bestaande}
+    # id → dict voor snelle opzoek bij updates
+    id_to_row  = {r['id']: r for r in bestaande}
+
+    def _sporza_rol(c):
+        spec = (c.get('speciality') or c.get('specialty') or '').lower()
+        if 'climb' in spec or 'grimpeur' in spec: return 'klimmer'
+        if 'sprint' in spec:                       return 'sprinter'
+        if 'time' in spec or 'chrono' in spec or 'tt' in spec: return 'tijdrijder'
+        return 'allrounder'
+
+    aangemaakt  = 0
+    bijgewerkt  = 0
+    ongewijzigd = 0
+
+    for c in cyclists:
+        naam = (c.get('fullName') or '').strip()
+        if not naam:
+            continue
+        ploeg  = (c.get('team') or {}).get('name') or ''
+        prijs  = float(c.get('price') or 0)
+        punten = int(c.get('totalBasePoints') or 0)
+
+        # ── Naam-matching ──────────────────────────────────────────────────────
+        norm = _norm(naam)
+        renner_id = norm_to_id.get(norm)
+
+        if renner_id is None:
+            # Fallback: achternaam + initiaal matching
+            sporza_set = {norm}
+            for db_r in bestaande:
+                if _name_match(db_r['naam'], sporza_set):
+                    renner_id = db_r['id']
+                    break
+
+        # ── Update of aanmaken ─────────────────────────────────────────────────
+        if renner_id is not None:
+            oud = id_to_row[renner_id]
+            if oud['ploeg'] != ploeg or float(oud['prijs']) != prijs or int(oud['totaal_punten'] or 0) != punten:
+                conn.execute(
+                    "UPDATE renners SET ploeg=?, prijs=?, totaal_punten=? WHERE id=?",
+                    (ploeg, prijs, punten, renner_id),
+                )
+                bijgewerkt += 1
+            else:
+                ongewijzigd += 1
+        else:
+            conn.execute(
+                "INSERT INTO renners (naam, ploeg, rol, prijs, totaal_punten, seizoen_id) "
+                "VALUES (?,?,?,?,?,?)",
+                (naam, ploeg, _sporza_rol(c), prijs, punten, sid),
+            )
+            aangemaakt += 1
+
+    conn.commit()
+    conn.close()
+
+    app.logger.info(
+        f"Sync Sporza seizoen {sid} (edition={edition}): "
+        f"{aangemaakt} aangemaakt, {bijgewerkt} bijgewerkt, {ongewijzigd} ongewijzigd"
+    )
+    return jsonify({
+        'ok':           True,
+        'totaal_sporza': len(cyclists),
+        'aangemaakt':   aangemaakt,
+        'bijgewerkt':   bijgewerkt,
+        'ongewijzigd':  ongewijzigd,
+    })
+
+
 @app.route('/sw.js')
 def service_worker():
     """Serveer de service worker vanuit de root zodat de scope '/' is."""

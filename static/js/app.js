@@ -937,6 +937,11 @@ function renderRenners() {
           title="${nSel === 0 ? 'Selecteer renners via de checkboxes om te updaten' : `Update foto, ploeg en prijs voor ${nSel} geselecteerde renner${nSel !== 1 ? 's' : ''} via Sporza WM`}">
           🔄 Update${nSel > 0 ? ` (<span id="sel-count">${nSel}</span>)` : ' <span id="sel-count" style="display:none">0</span>'}
         </button>
+        ${state.currentUser?.is_admin ? `
+        <button class="btn btn-secondary" onclick="syncRennersSporza()"
+          title="Haal alle renners op van Sporza WM: bestaande bijwerken, nieuwe aanmaken">
+          🔃 Sync Sporza
+        </button>` : ''}
         <button class="btn btn-primary" onclick="openNieuweRenner()">+ Renner Toevoegen</button>
       </div>
     </div>
@@ -1135,6 +1140,50 @@ async function bulkUpdateRenners() {
   }
   const closeBtn = document.getElementById('bulk-close-btn');
   if (closeBtn) closeBtn.style.display = '';
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+
+async function syncRennersSporza() {
+  // Laadscherm
+  openModal(`
+    <div class="modal-title">🔃 Sync Sporza Renners</div>
+    <div style="display:flex;align-items:center;gap:14px;padding:24px 0;color:var(--muted)">
+      <div class="chat-spinner"></div>
+      <span>Renners ophalen van Sporza WM…<br>
+        <span style="font-size:0.8rem">Dit kan enkele seconden duren.</span>
+      </span>
+    </div>
+  `);
+
+  try {
+    const d = await post('/api/admin/renners/sync-sporza', {});
+
+    const rij = (label, waarde, kleur) =>
+      `<div style="display:flex;justify-content:space-between;align-items:center;
+                   padding:8px 12px;background:var(--bg3);border-radius:8px">
+        <span style="color:var(--muted);font-size:0.88rem">${label}</span>
+        <span style="font-weight:700;font-size:1rem;color:${kleur || 'var(--text)'}">${waarde}</span>
+      </div>`;
+
+    openModal(`
+      <div class="modal-title">🔃 Sync Sporza — Klaar</div>
+      <div style="display:flex;flex-direction:column;gap:8px;margin:16px 0">
+        ${rij('Renners op Sporza WM', d.totaal_sporza)}
+        ${rij('Nieuw aangemaakt', d.aangemaakt, d.aangemaakt > 0 ? 'var(--green)' : 'var(--muted)')}
+        ${rij('Bijgewerkt (ploeg / prijs / punten)', d.bijgewerkt, d.bijgewerkt > 0 ? 'var(--accent)' : 'var(--muted)')}
+        ${rij('Ongewijzigd', d.ongewijzigd, 'var(--muted)')}
+      </div>
+      <button class="btn btn-primary" style="width:100%;margin-top:4px"
+        onclick="closeModal();refreshAll()">✓ Sluiten &amp; vernieuwen</button>
+    `);
+  } catch(e) {
+    openModal(`
+      <div class="modal-title">⚠️ Sync mislukt</div>
+      <div style="color:var(--red);padding:14px 0;font-size:0.9rem">${e.message}</div>
+      <button class="btn btn-secondary" style="width:100%" onclick="closeModal()">Sluiten</button>
+    `);
+  }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
