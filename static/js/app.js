@@ -20,6 +20,8 @@ const state = {
   // AI chat
   chatMessages: [],   // [{role:'user'|'assistant', content:'...', transfer_suggestion?:{...}}]
   chatLoading: false,
+  // Auth
+  currentUser: null,  // {user_id, username, is_admin}
 };
 
 // ── API helpers ──────────────────────────────────────────────────────────────
@@ -67,9 +69,10 @@ const PAGE_LABELS = {
   statistieken: 'Statistieken',
   suggesties:   'Suggesties',
   spelregels:   'Spelregels',
-  'ai-chat':         'AI Assistent',
-  'mini-competitie': 'Minicompetitie',
-  instellingen:      'Instellingen',
+  'ai-chat':            'AI Assistent',
+  'mini-competitie':    'Minicompetitie',
+  instellingen:         'Instellingen',
+  'admin-gebruikers':   'Gebruikers',
 };
 
 function getPageLabel(page) {
@@ -175,6 +178,26 @@ document.getElementById('hamburger').addEventListener('click', () => {
   document.getElementById('sidebar').classList.toggle('open');
 });
 
+// ── Sidebar user display ──────────────────────────────────────────────────────
+function updateSidebarUser() {
+  const user = state.currentUser;
+  const el = document.getElementById('sidebar-user');
+  const adminEl = document.getElementById('nav-admin');
+  if (!el) return;
+
+  if (user && user.username) {
+    el.innerHTML = `
+      <strong>👤 ${user.username}</strong>
+      ${user.is_admin ? '<span style="font-size:0.7rem;color:var(--accent)"> · admin</span>' : ''}
+      <br/><a href="/logout">Uitloggen</a>
+    `;
+    if (adminEl) adminEl.style.display = user.is_admin ? '' : 'none';
+  } else {
+    el.innerHTML = '';
+    if (adminEl) adminEl.style.display = 'none';
+  }
+}
+
 // Sluit sidebar bij klik buiten het menu
 document.addEventListener('click', e => {
   const sidebar  = document.getElementById('sidebar');
@@ -213,7 +236,7 @@ function sortTable(arr, key, dir) {
 
 // ── Load data ────────────────────────────────────────────────────────────────
 async function loadAll() {
-  const [renners, ploeg, koersen, stats, inst, gepland, transfers] = await Promise.all([
+  const [renners, ploeg, koersen, stats, inst, gepland, transfers, me] = await Promise.all([
     get('/api/renners'),
     get('/api/mijn-ploeg'),
     get('/api/koersen'),
@@ -221,6 +244,7 @@ async function loadAll() {
     get('/api/instellingen'),
     get('/api/geplande-transfers'),
     get('/api/transfers'),
+    get('/api/me').catch(() => null),
   ]);
   state.renners          = renners;
   state.ploeg            = ploeg;
@@ -229,6 +253,7 @@ async function loadAll() {
   state.instellingen     = inst;
   state.geplandTransfers = gepland;
   state.transfers        = transfers;
+  state.currentUser      = me;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -4147,6 +4172,95 @@ async function updateRennerVolledig(rid, naam) {
 // ═══════════════════════════════════════════════════════════════════════════
 // Render engine
 // ═══════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
+// PAGE: Admin – Gebruikersbeheer
+// ═══════════════════════════════════════════════════════════════════════════
+async function renderAdminGebruikers() {
+  if (!state.currentUser?.is_admin) {
+    return `<div class="card"><p>Geen toegang.</p></div>`;
+  }
+
+  let users = [];
+  try { users = await get('/api/admin/users'); } catch(e) { return `<div class="card"><p>Fout: ${e.message}</p></div>`; }
+
+  const currentUid = state.currentUser.user_id;
+  const rows = users.map(u => `
+    <tr>
+      <td style="width:32px;color:var(--muted)">${u.id}</td>
+      <td><strong>${u.username}</strong></td>
+      <td>${u.is_admin ? '<span class="badge badge-monument">admin</span>' : '<span class="badge badge-niet_wt">gebruiker</span>'}</td>
+      <td style="color:var(--muted)">${u.created_at || '—'}</td>
+      <td style="white-space:nowrap">
+        <button class="btn btn-secondary btn-sm" onclick="adminResetPassword(${u.id},'${u.username}')">🔑 Reset ww</button>
+        ${u.id !== currentUid
+          ? `<button class="btn btn-sm" style="margin-left:6px;background:rgba(239,68,68,.15);color:#ef4444;border:1px solid rgba(239,68,68,.3)" onclick="adminDeleteUser(${u.id},'${u.username}')">✕</button>`
+          : '<span style="margin-left:6px;font-size:0.78rem;color:var(--muted)">(jij)</span>'}
+      </td>
+    </tr>
+  `).join('');
+
+  return `
+    <h2 style="margin-bottom:20px">👤 Gebruikersbeheer</h2>
+
+    <div class="card" style="margin-bottom:20px">
+      <h3 style="margin:0 0 16px">Accounts (${users.length})</h3>
+      <div style="overflow-x:auto">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Gebruikersnaam</th>
+              <th>Rol</th>
+              <th>Aangemaakt</th>
+              <th>Acties</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin:0 0 16px">➕ Nieuw account aanmaken</h3>
+      <form id="admin-add-user-form">
+        <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end">
+          <div>
+            <label class="form-label">Gebruikersnaam</label>
+            <input class="form-input" name="username" placeholder="bijv. jan" required autocomplete="off" style="width:160px" />
+          </div>
+          <div>
+            <label class="form-label">Wachtwoord</label>
+            <input class="form-input" name="password" type="password" placeholder="••••••••" required autocomplete="new-password" style="width:160px" />
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;padding-bottom:2px">
+            <input type="checkbox" name="is_admin" id="new-is-admin" value="1" />
+            <label for="new-is-admin" class="form-label" style="margin:0;cursor:pointer">Admin</label>
+          </div>
+          <button type="submit" class="btn btn-primary">Aanmaken</button>
+        </div>
+      </form>
+    </div>
+  `;
+}
+
+async function adminResetPassword(uid, username) {
+  const newPw = prompt(`Nieuw wachtwoord voor "${username}":`);
+  if (!newPw || !newPw.trim()) return;
+  try {
+    await put(`/api/admin/users/${uid}`, { password: newPw.trim() });
+    toast(`Wachtwoord voor ${username} gereset ✅`, 'success');
+  } catch(e) { toast('Fout: ' + e.message, 'error'); }
+}
+
+async function adminDeleteUser(uid, username) {
+  if (!confirm(`Gebruiker "${username}" definitief verwijderen? Dit kan niet ongedaan worden.`)) return;
+  try {
+    await del(`/api/admin/users/${uid}`);
+    toast(`${username} verwijderd`, 'success');
+    await renderPage();
+  } catch(e) { toast('Fout: ' + e.message, 'error'); }
+}
+
 async function renderPage() {
   const app = document.getElementById('app');
   try {
@@ -4165,7 +4279,8 @@ async function renderPage() {
       case 'spelregels':   html = renderSpelregels(); break;
       case 'ai-chat':          html = renderAiChat(); break;
       case 'mini-competitie':  html = await renderMiniCompetitie(); break;
-      case 'instellingen':     html = await renderInstellingen(); break;
+      case 'instellingen':       html = await renderInstellingen(); break;
+      case 'admin-gebruikers':  html = await renderAdminGebruikers(); break;
       default: html = renderDashboard();
     }
     app.innerHTML = renderBreadcrumb() + html;
@@ -4206,6 +4321,25 @@ async function renderPage() {
         });
       }
     }
+    if (state.page === 'admin-gebruikers') {
+      const addForm = document.getElementById('admin-add-user-form');
+      if (addForm) {
+        addForm.addEventListener('submit', async e => {
+          e.preventDefault();
+          const fd = new FormData(e.target);
+          const body = {
+            username: fd.get('username').trim(),
+            password: fd.get('password'),
+            is_admin: fd.get('is_admin') === '1' ? 1 : 0,
+          };
+          try {
+            await post('/api/admin/users', body);
+            toast(`Account "${body.username}" aangemaakt ✅`, 'success');
+            await renderPage();
+          } catch(err) { toast('Fout: ' + err.message, 'error'); }
+        });
+      }
+    }
   } catch(e) {
     app.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div>
       <div class="empty-title">Fout bij laden</div><div class="empty-text">${e.message}</div></div>`;
@@ -4213,7 +4347,7 @@ async function renderPage() {
 }
 
 // ── Refresh helpers ──────────────────────────────────────────────────────────
-async function refreshAll() { await loadAll(); renderPage(); }
+async function refreshAll() { await loadAll(); updateSidebarUser(); renderPage(); }
 async function refreshPloeg() {
   state.ploeg   = await get('/api/mijn-ploeg');
   state.renners = await get('/api/renners');
@@ -4333,6 +4467,7 @@ async function vraagNotificatiePermissie() {
 // ── Boot ─────────────────────────────────────────────────────────────────────
 (async () => {
   await loadAll();
+  updateSidebarUser();
   renderPage();
   // Check after a short delay (state must be loaded)
   setTimeout(checkOpstellingNotificatie, 1500);

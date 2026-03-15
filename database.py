@@ -136,6 +136,118 @@ def init_db():
         except Exception:
             pass  # kolom bestaat al
 
+    # ── Multi-user: users tabel ───────────────────────────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            is_admin INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (date('now'))
+        )
+    """)
+
+    # ── Multi-user: user_id toevoegen aan mijn_ploeg ──────────────────────────
+    # SQLite ondersteunt geen DROP CONSTRAINT, dus we recreëren de tabel.
+    _ploeg_cols = {row[1] for row in conn.execute("PRAGMA table_info(mijn_ploeg)").fetchall()}
+    if 'user_id' not in _ploeg_cols:
+        conn.execute("ALTER TABLE mijn_ploeg RENAME TO mijn_ploeg_old")
+        conn.execute("""
+            CREATE TABLE mijn_ploeg (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                renner_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL DEFAULT 1,
+                positie TEXT DEFAULT 'bus' CHECK(positie IN ('starter','bus')),
+                is_kopman INTEGER DEFAULT 0,
+                aangeschaft_op TEXT DEFAULT (date('now')),
+                UNIQUE(renner_id, user_id),
+                FOREIGN KEY (renner_id) REFERENCES renners(id)
+            )
+        """)
+        conn.execute("""
+            INSERT INTO mijn_ploeg (id, renner_id, user_id, positie, is_kopman, aangeschaft_op)
+            SELECT id, renner_id, 1, positie, is_kopman, aangeschaft_op FROM mijn_ploeg_old
+        """)
+        conn.execute("DROP TABLE mijn_ploeg_old")
+        conn.commit()
+
+    # ── Multi-user: user_id toevoegen aan opstelling ──────────────────────────
+    _ops_cols = {row[1] for row in conn.execute("PRAGMA table_info(opstelling)").fetchall()}
+    if 'user_id' not in _ops_cols:
+        conn.execute("ALTER TABLE opstelling RENAME TO opstelling_old")
+        conn.execute("""
+            CREATE TABLE opstelling (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                koers_id INTEGER NOT NULL,
+                renner_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL DEFAULT 1,
+                is_kopman INTEGER DEFAULT 0,
+                UNIQUE(koers_id, renner_id, user_id),
+                FOREIGN KEY (koers_id) REFERENCES koersen(id),
+                FOREIGN KEY (renner_id) REFERENCES renners(id)
+            )
+        """)
+        conn.execute("""
+            INSERT INTO opstelling (id, koers_id, renner_id, user_id, is_kopman)
+            SELECT id, koers_id, renner_id, 1, is_kopman FROM opstelling_old
+        """)
+        conn.execute("DROP TABLE opstelling_old")
+        conn.commit()
+
+    # ── Multi-user: user_id toevoegen aan resultaten ──────────────────────────
+    _res_cols = {row[1] for row in conn.execute("PRAGMA table_info(resultaten)").fetchall()}
+    if 'user_id' not in _res_cols:
+        conn.execute("ALTER TABLE resultaten RENAME TO resultaten_old")
+        conn.execute("""
+            CREATE TABLE resultaten (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                koers_id INTEGER NOT NULL,
+                renner_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL DEFAULT 1,
+                positie INTEGER,
+                punten INTEGER NOT NULL DEFAULT 0,
+                bonuspunten_kopman INTEGER DEFAULT 0,
+                bonuspunten_ploegmaat INTEGER DEFAULT 0,
+                UNIQUE(koers_id, renner_id, user_id),
+                FOREIGN KEY (koers_id) REFERENCES koersen(id),
+                FOREIGN KEY (renner_id) REFERENCES renners(id)
+            )
+        """)
+        conn.execute("""
+            INSERT INTO resultaten
+                (id, koers_id, renner_id, user_id, positie, punten, bonuspunten_kopman, bonuspunten_ploegmaat)
+            SELECT id, koers_id, renner_id, 1, positie, punten, bonuspunten_kopman, bonuspunten_ploegmaat
+            FROM resultaten_old
+        """)
+        conn.execute("DROP TABLE resultaten_old")
+        conn.commit()
+
+    # ── Multi-user: user_id toevoegen aan transfers + geplande_transfers ──────
+    for _col_sql in [
+        "ALTER TABLE transfers ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE geplande_transfers ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
+    ]:
+        try:
+            conn.execute(_col_sql)
+            conn.commit()
+        except Exception:
+            pass  # Kolom bestaat al
+
+    # ── Multi-user bootstrap: eerste admin aanmaken ───────────────────────────
+    _user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    if _user_count == 0:
+        try:
+            from werkzeug.security import generate_password_hash as _gen_hash
+            _app_password = os.environ.get('APP_PASSWORD', 'admin')
+            _admin_hash = _gen_hash(_app_password, method='pbkdf2:sha256')
+            conn.execute(
+                "INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, 1)",
+                ('admin', _admin_hash)
+            )
+            conn.commit()
+        except Exception:
+            pass  # werkzeug niet beschikbaar → skip bootstrap
+
     # Migratie: historiek_renner tabel (uitslagen vorig seizoen, display-only)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS historiek_renner (

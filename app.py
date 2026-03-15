@@ -10,6 +10,9 @@ import secrets
 from functools import wraps
 from flask import Flask, jsonify, request, render_template, abort, make_response, redirect, url_for, session
 from werkzeug.utils import secure_filename
+from werkzeug.security import check_password_hash
+from werkzeug.security import generate_password_hash as _gen_pw_hash
+def generate_password_hash(pw): return _gen_pw_hash(pw, method='pbkdf2:sha256')
 from database import (
     get_db, init_db, seed_renners, seed_koersen,
     punten_voor_positie, kopman_bonus, transfer_kosten, PUNTEN
@@ -298,11 +301,24 @@ app.config['SESSION_COOKIE_SECURE'] = True
 # ── Authenticatie ──────────────────────────────────────────────────────────────
 APP_PASSWORD = os.environ.get('APP_PASSWORD', '')  # Leeg = geen auth (lokaal dev)
 
+# User-specifieke instellingen sleutels (opgeslagen als {sleutel}_{user_id})
+_USER_INST_KEYS = frozenset([
+    'budget', 'transfer_count',
+    'sporza_cookie', 'sporza_cookie_vt', 'sporza_cookie_rt',
+])
+
+def current_user_id():
+    """Geeft de user_id van de ingelogde gebruiker. In dev-mode altijd 1."""
+    uid = session.get('user_id')
+    if uid:
+        return uid
+    if not APP_PASSWORD:
+        return 1
+    return None
+
 def _check_auth():
     """Geeft True als auth uitgeschakeld is (geen APP_PASSWORD) of gebruiker ingelogd is."""
-    if not APP_PASSWORD:
-        return True
-    return session.get('authenticated') is True
+    return current_user_id() is not None
 
 def login_required(f):
     @wraps(f)
@@ -319,6 +335,11 @@ def require_login():
     """Bescherm alle routes behalve /login en /static."""
     if request.path in ('/login', '/logout') or request.path.startswith('/static/'):
         return None
+    # Dev-mode: auto-login als user 1 zodat current_user_id() altijd werkt
+    if not APP_PASSWORD and not session.get('user_id'):
+        session['user_id'] = 1
+        session['username'] = 'admin'
+        session['is_admin'] = True
     if not _check_auth():
         if request.path.startswith('/api/'):
             return jsonify({'error': 'Niet ingelogd', 'login_required': True}), 401
@@ -328,12 +349,20 @@ def require_login():
 def login():
     error = None
     if request.method == 'POST':
-        pwd = request.form.get('password', '')
-        if APP_PASSWORD and pwd == APP_PASSWORD:
-            session['authenticated'] = True
-            session.permanent = True   # sessie blijft 1 jaar geldig
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '')
+        conn = get_db()
+        user = conn.execute(
+            "SELECT * FROM users WHERE username=?", (username,)
+        ).fetchone()
+        conn.close()
+        if user and check_password_hash(user['password_hash'], password):
+            session['user_id'] = user['id']
+            session['username'] = user['username']
+            session['is_admin'] = bool(user['is_admin'])
+            session.permanent = True
             return redirect('/')
-        error = 'Verkeerd wachtwoord'
+        error = 'Onbekende gebruiker of verkeerd wachtwoord'
     # Eenvoudige login pagina
     bg = '#131720'
     accent = '#FF8C00'
@@ -361,7 +390,7 @@ def login():
              background:{accent};color:#fff;font-size:1rem;font-weight:600;
              cursor:pointer;margin-top:16px}}
     .error{{color:#f87171;font-size:0.85rem;margin-top:12px;text-align:center}}
-    label{{color:#a0aec0;font-size:0.85rem}}
+    label{{color:#a0aec0;font-size:0.85rem;display:block;margin-top:14px}}
   </style>
 </head>
 <body>
@@ -372,8 +401,10 @@ def login():
       <p>Log in om verder te gaan</p>
     </div>
     <form method="POST">
+      <label>Gebruikersnaam</label>
+      <input type="text" name="username" autofocus placeholder="gebruikersnaam" autocomplete="username">
       <label>Wachtwoord</label>
-      <input type="password" name="password" autofocus placeholder="••••••••">
+      <input type="password" name="password" placeholder="••••••••" autocomplete="current-password">
       <button type="submit">Inloggen</button>
       {'<p class="error">⚠️ ' + error + '</p>' if error else ''}
     </form>
@@ -385,6 +416,105 @@ def login():
 def logout():
     session.clear()
     return redirect('/login')
+
+
+@app.route('/api/me')
+def api_me():
+    """Geeft de ingelogde gebruiker terug."""
+    uid = current_user_id()
+    if not uid:
+        return jsonify({'error': 'Niet ingelogd'}), 401
+    return jsonify({
+        'user_id': uid,
+        'username': session.get('username', 'admin'),
+        'is_admin': session.get('is_admin', False),
+    })
+
+
+# ── API: Admin gebruikersbeheer ────────────────────────────────────────────────
+
+def _require_admin():
+    """Geeft (None, None) als gebruiker admin is, anders (response, status_code)."""
+    uid = current_user_id()
+    if not uid:
+        return jsonify({'error': 'Niet ingelogd'}), 401
+    if not session.get('is_admin'):
+        return jsonify({'error': 'Geen admin-rechten'}), 403
+    return None, None
+
+
+@app.route('/api/admin/users', methods=['GET'])
+def admin_list_users():
+    err, code = _require_admin()
+    if err:
+        return err, code
+    conn = get_db()
+    users = conn.execute(
+        "SELECT id, username, is_admin, created_at FROM users ORDER BY id"
+    ).fetchall()
+    conn.close()
+    return jsonify([dict(u) for u in users])
+
+
+@app.route('/api/admin/users', methods=['POST'])
+def admin_create_user():
+    err, code = _require_admin()
+    if err:
+        return err, code
+    d = request.json or {}
+    username = (d.get('username') or '').strip()
+    password = (d.get('password') or '').strip()
+    is_admin = int(bool(d.get('is_admin', False)))
+    if not username or not password:
+        return jsonify({'error': 'username en password zijn verplicht'}), 400
+    conn = get_db()
+    try:
+        conn.execute(
+            "INSERT INTO users (username, password_hash, is_admin) VALUES (?,?,?)",
+            (username, generate_password_hash(password), is_admin)
+        )
+        conn.commit()
+        new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.close()
+        return jsonify({'ok': True, 'id': new_id, 'username': username}), 201
+    except Exception as e:
+        conn.close()
+        return jsonify({'error': f'Gebruikersnaam al in gebruik: {str(e)}'}), 409
+
+
+@app.route('/api/admin/users/<int:uid>', methods=['PUT'])
+def admin_update_user(uid):
+    err, code = _require_admin()
+    if err:
+        return err, code
+    d = request.json or {}
+    conn = get_db()
+    if 'password' in d and d['password']:
+        conn.execute(
+            "UPDATE users SET password_hash=? WHERE id=?",
+            (generate_password_hash(d['password']), uid)
+        )
+    if 'is_admin' in d:
+        # Voorkom dat admin zichzelf admin-rechten afneemt
+        if uid != current_user_id():
+            conn.execute("UPDATE users SET is_admin=? WHERE id=?", (int(bool(d['is_admin'])), uid))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/admin/users/<int:uid>', methods=['DELETE'])
+def admin_delete_user(uid):
+    err, code = _require_admin()
+    if err:
+        return err, code
+    if uid == current_user_id():
+        return jsonify({'error': 'Je kan jezelf niet verwijderen'}), 400
+    conn = get_db()
+    conn.execute("DELETE FROM users WHERE id=?", (uid,))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
 
 @app.route('/sw.js')
 def service_worker():
@@ -499,9 +629,9 @@ def server_info():
 @app.route("/api/instellingen")
 def get_instellingen():
     conn = get_db()
-    rows = conn.execute("SELECT sleutel, waarde FROM instellingen").fetchall()
+    result = _get_inst(conn)
     conn.close()
-    return jsonify({r["sleutel"]: r["waarde"] for r in rows})
+    return jsonify(result)
 
 
 @app.route("/api/instellingen", methods=["PUT"])
@@ -509,10 +639,13 @@ def update_instellingen():
     data = request.json
     conn = get_db()
     for k, v in data.items():
-        conn.execute(
-            "INSERT OR REPLACE INTO instellingen (sleutel, waarde) VALUES (?,?)",
-            (k, str(v))
-        )
+        if k in _USER_INST_KEYS:
+            _set_user_inst_val(conn, k, v)
+        else:
+            conn.execute(
+                "INSERT OR REPLACE INTO instellingen (sleutel, waarde) VALUES (?,?)",
+                (k, str(v))
+            )
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
@@ -912,15 +1045,16 @@ def laad_renner_historiek(rid):
 
 @app.route("/api/renners")
 def get_renners():
+    uid = current_user_id()
     conn = get_db()
     renners = conn.execute("""
         SELECT r.*,
                CASE WHEN m.renner_id IS NOT NULL THEN 1 ELSE 0 END as in_ploeg
         FROM renners r
-        LEFT JOIN mijn_ploeg m ON r.id = m.renner_id
+        LEFT JOIN mijn_ploeg m ON r.id = m.renner_id AND m.user_id = ?
         WHERE r.actief = 1
         ORDER BY r.totaal_punten DESC, r.prijs DESC
-    """).fetchall()
+    """, (uid,)).fetchall()
     conn.close()
     return jsonify([dict(r) for r in renners])
 
@@ -1012,8 +1146,9 @@ def get_renner_detail(rid):
         conn.close()
         return jsonify({"error": "Renner niet gevonden"}), 404
 
+    uid = current_user_id()
     in_ploeg = conn.execute(
-        "SELECT 1 FROM mijn_ploeg WHERE renner_id=?", (rid,)
+        "SELECT 1 FROM mijn_ploeg WHERE renner_id=? AND user_id=?", (rid, uid)
     ).fetchone()
 
     # Wedstrijden waar renner in opstelling of resultaten staat
@@ -1024,14 +1159,14 @@ def get_renner_detail(rid):
                COALESCE(res.punten, 0) as renner_punten,
                (SELECT COALESCE(SUM(r2.punten), 0)
                 FROM resultaten r2
-                JOIN opstelling o2 ON o2.renner_id=r2.renner_id AND o2.koers_id=r2.koers_id
-                WHERE r2.koers_id=k.id) as team_punten
+                JOIN opstelling o2 ON o2.renner_id=r2.renner_id AND o2.koers_id=r2.koers_id AND o2.user_id=r2.user_id
+                WHERE r2.koers_id=k.id AND r2.user_id=?) as team_punten
         FROM koersen k
-        LEFT JOIN opstelling o ON o.koers_id=k.id AND o.renner_id=?
-        LEFT JOIN resultaten res ON res.koers_id=k.id AND res.renner_id=?
+        LEFT JOIN opstelling o ON o.koers_id=k.id AND o.renner_id=? AND o.user_id=?
+        LEFT JOIN resultaten res ON res.koers_id=k.id AND res.renner_id=? AND res.user_id=?
         WHERE o.renner_id IS NOT NULL OR res.renner_id IS NOT NULL
         ORDER BY k.datum ASC
-    """, (rid, rid)).fetchall()
+    """, (uid, rid, uid, rid, uid)).fetchall()
 
     # Transfer info: wanneer via transfer ingekomen
     transfer_in = conn.execute("""
@@ -1039,12 +1174,12 @@ def get_renner_detail(rid):
                ruit.naam as renner_uit_naam, ruit.prijs as prijs_uit
         FROM transfers t
         JOIN renners ruit ON ruit.id = t.renner_uit_id
-        WHERE t.renner_in_id = ?
+        WHERE t.renner_in_id = ? AND t.user_id = ?
         ORDER BY t.datum DESC LIMIT 1
-    """, (rid,)).fetchone()
+    """, (rid, uid)).fetchone()
 
     aangeschaft = conn.execute(
-        "SELECT aangeschaft_op FROM mijn_ploeg WHERE renner_id = ?", (rid,)
+        "SELECT aangeschaft_op FROM mijn_ploeg WHERE renner_id = ? AND user_id = ?", (rid, uid)
     ).fetchone()
 
     # Historiek vorig seizoen (opgeslagen via Update-knop)
@@ -1212,8 +1347,9 @@ def toggle_geblesseerd(rid):
 
 @app.route("/api/mijn-ploeg")
 def get_mijn_ploeg():
+    uid = current_user_id()
     conn = get_db()
-    inst = {r["sleutel"]: r["waarde"] for r in conn.execute("SELECT * FROM instellingen").fetchall()}
+    inst = _get_inst(conn)
     budget = float(inst.get("budget", 120))
 
     ploeg = conn.execute("""
@@ -1221,8 +1357,9 @@ def get_mijn_ploeg():
                r.foto, r.geblesseerd, m.aangeschaft_op
         FROM mijn_ploeg m
         JOIN renners r ON r.id = m.renner_id
+        WHERE m.user_id = ?
         ORDER BY r.prijs DESC, r.totaal_punten DESC
-    """).fetchall()
+    """, (uid,)).fetchall()
 
     uitgegeven = sum(r["prijs"] for r in ploeg)
     resterend = round(budget - uitgegeven, 2)
@@ -1237,12 +1374,58 @@ def get_mijn_ploeg():
     })
 
 
-def _get_inst(conn):
-    return {r["sleutel"]: r["waarde"] for r in conn.execute("SELECT * FROM instellingen").fetchall()}
+def _get_user_inst_val(conn, key, uid=None, default=None):
+    """Haal een user-specifieke instellingen waarde op (met fallback naar ongesuffixte key)."""
+    if uid is None:
+        uid = current_user_id() or 1
+    row = conn.execute("SELECT waarde FROM instellingen WHERE sleutel=?", (f"{key}_{uid}",)).fetchone()
+    if row:
+        return row['waarde']
+    row = conn.execute("SELECT waarde FROM instellingen WHERE sleutel=?", (key,)).fetchone()
+    return row['waarde'] if row else default
+
+
+def _set_user_inst_val(conn, key, val, uid=None):
+    """Sla een user-specifieke instellingen waarde op als {key}_{uid}."""
+    if uid is None:
+        uid = current_user_id() or 1
+    conn.execute(
+        "INSERT OR REPLACE INTO instellingen (sleutel, waarde) VALUES (?,?)",
+        (f"{key}_{uid}", str(val))
+    )
+
+
+def _get_inst(conn, uid=None):
+    """Alle instellingen voor de huidige gebruiker (user-specifieke waarden overschrijven shared)."""
+    if uid is None:
+        uid = current_user_id() or 1
+    all_rows = {r['sleutel']: r['waarde'] for r in conn.execute("SELECT sleutel, waarde FROM instellingen").fetchall()}
+    result = {}
+    suffix = f"_{uid}"
+    for key, val in all_rows.items():
+        # Skip andere gebruikers' specifieke keys
+        skip = False
+        for base_key in _USER_INST_KEYS:
+            if key.startswith(f"{base_key}_") and key != f"{base_key}{suffix}":
+                skip = True
+                break
+        if skip:
+            continue
+        # Map {base_key}_{uid} → base_key in result
+        mapped = False
+        for base_key in _USER_INST_KEYS:
+            if key == f"{base_key}{suffix}":
+                result[base_key] = val
+                mapped = True
+                break
+        if not mapped:
+            result[key] = val
+    return result
 
 
 @app.route("/api/mijn-ploeg/add", methods=["POST"])
 def add_to_ploeg():
+    uid = current_user_id()
     rid = request.json.get("renner_id")
     conn = get_db()
     inst = _get_inst(conn)
@@ -1253,7 +1436,8 @@ def add_to_ploeg():
 
     ploeg = conn.execute("""
         SELECT r.prijs, r.ploeg FROM mijn_ploeg m JOIN renners r ON r.id=m.renner_id
-    """).fetchall()
+        WHERE m.user_id=?
+    """, (uid,)).fetchall()
 
     if len(ploeg) >= max_renners:
         conn.close()
@@ -1275,7 +1459,7 @@ def add_to_ploeg():
         return jsonify({"error": f"Onvoldoende budget (€{budget - uitgegeven:.1f}M beschikbaar)"}), 400
 
     try:
-        conn.execute("INSERT INTO mijn_ploeg (renner_id) VALUES (?)", (rid,))
+        conn.execute("INSERT INTO mijn_ploeg (renner_id, user_id) VALUES (?,?)", (rid, uid))
         conn.commit()
     except Exception:
         conn.close()
@@ -1287,9 +1471,10 @@ def add_to_ploeg():
 
 @app.route("/api/mijn-ploeg/remove", methods=["POST"])
 def remove_from_ploeg():
+    uid = current_user_id()
     rid = request.json.get("renner_id")
     conn = get_db()
-    conn.execute("DELETE FROM mijn_ploeg WHERE renner_id=?", (rid,))
+    conn.execute("DELETE FROM mijn_ploeg WHERE renner_id=? AND user_id=?", (rid, uid))
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
@@ -1299,6 +1484,7 @@ def remove_from_ploeg():
 
 @app.route("/api/transfers/kosten")
 def get_transfer_kosten():
+    uid = current_user_id()
     conn = get_db()
     inst = _get_inst(conn)
     count = int(inst.get("transfer_count", 0))
@@ -1306,7 +1492,10 @@ def get_transfer_kosten():
     volgende = count + 1
     kosten = transfer_kosten(volgende, gratis)
     budget_rest = float(inst.get("budget", 120))
-    ploeg = conn.execute("SELECT r.prijs FROM mijn_ploeg m JOIN renners r ON r.id=m.renner_id").fetchall()
+    ploeg = conn.execute(
+        "SELECT r.prijs FROM mijn_ploeg m JOIN renners r ON r.id=m.renner_id WHERE m.user_id=?",
+        (uid,)
+    ).fetchall()
     uitgegeven = sum(r["prijs"] for r in ploeg)
     budget_rest = round(budget_rest - uitgegeven, 2)
     conn.close()
@@ -1320,6 +1509,7 @@ def get_transfer_kosten():
 
 @app.route("/api/transfers", methods=["POST"])
 def do_transfer():
+    uid = current_user_id()
     d = request.json
     rid_uit = d.get("renner_uit_id")
     rid_in  = d.get("renner_in_id")
@@ -1334,8 +1524,8 @@ def do_transfer():
     kosten = transfer_kosten(volgende, gratis)
 
     ploeg_rest = conn.execute(
-        "SELECT r.prijs, r.ploeg FROM mijn_ploeg m JOIN renners r ON r.id=m.renner_id WHERE m.renner_id!=?",
-        (rid_uit,)
+        "SELECT r.prijs, r.ploeg FROM mijn_ploeg m JOIN renners r ON r.id=m.renner_id WHERE m.user_id=? AND m.renner_id!=?",
+        (uid, rid_uit)
     ).fetchall()
 
     renner_in = conn.execute("SELECT * FROM renners WHERE id=?", (rid_in,)).fetchone()
@@ -1355,15 +1545,15 @@ def do_transfer():
         conn.close()
         return jsonify({"error": f"Onvoldoende budget (transfer kost €{kosten}M + rennerprijs €{renner_in['prijs']}M)"}), 400
 
-    conn.execute("DELETE FROM mijn_ploeg WHERE renner_id=?", (rid_uit,))
-    conn.execute("INSERT OR REPLACE INTO mijn_ploeg (renner_id) VALUES (?)", (rid_in,))
+    conn.execute("DELETE FROM mijn_ploeg WHERE renner_id=? AND user_id=?", (rid_uit, uid))
+    conn.execute("INSERT OR REPLACE INTO mijn_ploeg (renner_id, user_id) VALUES (?,?)", (rid_in, uid))
     conn.execute(
-        "INSERT INTO transfers (renner_uit_id, renner_in_id, kosten) VALUES (?,?,?)",
-        (rid_uit, rid_in, kosten)
+        "INSERT INTO transfers (renner_uit_id, renner_in_id, kosten, user_id) VALUES (?,?,?,?)",
+        (rid_uit, rid_in, kosten, uid)
     )
     new_budget = round(budget - kosten, 2)
-    conn.execute("UPDATE instellingen SET waarde=? WHERE sleutel='transfer_count'", (str(volgende),))
-    conn.execute("UPDATE instellingen SET waarde=? WHERE sleutel='budget'", (str(new_budget),))
+    _set_user_inst_val(conn, 'transfer_count', str(volgende))
+    _set_user_inst_val(conn, 'budget', str(new_budget))
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "kosten": kosten, "nieuw_budget": new_budget})
@@ -1371,6 +1561,7 @@ def do_transfer():
 
 @app.route("/api/transfers")
 def get_transfers():
+    uid = current_user_id()
     conn = get_db()
     transfers = conn.execute("""
         SELECT t.id, t.datum, t.kosten,
@@ -1379,9 +1570,10 @@ def get_transfers():
         FROM transfers t
         LEFT JOIN renners ri ON ri.id = t.renner_in_id
         LEFT JOIN renners ru ON ru.id = t.renner_uit_id
+        WHERE t.user_id = ?
         ORDER BY t.datum DESC, t.id DESC
         LIMIT 50
-    """).fetchall()
+    """, (uid,)).fetchall()
     conn.close()
     return jsonify([dict(t) for t in transfers])
 
@@ -1390,6 +1582,7 @@ def get_transfers():
 
 @app.route("/api/geplande-transfers")
 def get_geplande_transfers():
+    uid = current_user_id()
     conn = get_db()
     rows = conn.execute("""
         SELECT gt.id, gt.datum, gt.aangemaakt_op,
@@ -1400,14 +1593,16 @@ def get_geplande_transfers():
         FROM geplande_transfers gt
         JOIN renners r_uit ON r_uit.id = gt.renner_uit_id
         JOIN renners r_in  ON r_in.id  = gt.renner_in_id
+        WHERE gt.user_id = ?
         ORDER BY gt.datum ASC
-    """).fetchall()
+    """, (uid,)).fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
 
 
 @app.route("/api/geplande-transfers", methods=["POST"])
 def add_gepland_transfer():
+    uid = current_user_id()
     data = request.get_json()
     renner_uit_id = data.get("renner_uit_id")
     renner_in_id  = data.get("renner_in_id")
@@ -1416,8 +1611,8 @@ def add_gepland_transfer():
         return jsonify({"error": "Ontbrekende velden"}), 400
     conn = get_db()
     conn.execute(
-        "INSERT INTO geplande_transfers (renner_uit_id, renner_in_id, datum) VALUES (?,?,?)",
-        (renner_uit_id, renner_in_id, datum)
+        "INSERT INTO geplande_transfers (renner_uit_id, renner_in_id, datum, user_id) VALUES (?,?,?,?)",
+        (renner_uit_id, renner_in_id, datum, uid)
     )
     conn.commit()
     conn.close()
@@ -1426,8 +1621,9 @@ def add_gepland_transfer():
 
 @app.route("/api/geplande-transfers/<int:gtid>", methods=["DELETE"])
 def delete_gepland_transfer(gtid):
+    uid = current_user_id()
     conn = get_db()
-    conn.execute("DELETE FROM geplande_transfers WHERE id=?", (gtid,))
+    conn.execute("DELETE FROM geplande_transfers WHERE id=? AND user_id=?", (gtid, uid))
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
@@ -1435,8 +1631,9 @@ def delete_gepland_transfer(gtid):
 
 @app.route("/api/geplande-transfers/<int:gtid>/uitvoeren", methods=["POST"])
 def uitvoeren_gepland_transfer(gtid):
+    uid = current_user_id()
     conn = get_db()
-    gt = conn.execute("SELECT * FROM geplande_transfers WHERE id=?", (gtid,)).fetchone()
+    gt = conn.execute("SELECT * FROM geplande_transfers WHERE id=? AND user_id=?", (gtid, uid)).fetchone()
     if not gt:
         conn.close()
         return jsonify({"error": "Geplande transfer niet gevonden"}), 404
@@ -1452,8 +1649,8 @@ def uitvoeren_gepland_transfer(gtid):
     kosten = transfer_kosten(volgende, gratis)
 
     ploeg_rest = conn.execute(
-        "SELECT r.prijs, r.ploeg FROM mijn_ploeg m JOIN renners r ON r.id=m.renner_id WHERE m.renner_id!=?",
-        (rid_uit,)
+        "SELECT r.prijs, r.ploeg FROM mijn_ploeg m JOIN renners r ON r.id=m.renner_id WHERE m.user_id=? AND m.renner_id!=?",
+        (uid, rid_uit)
     ).fetchall()
 
     renner_in = conn.execute("SELECT * FROM renners WHERE id=?", (rid_in,)).fetchone()
@@ -1461,7 +1658,7 @@ def uitvoeren_gepland_transfer(gtid):
         conn.close()
         return jsonify({"error": "Nieuw in te kopen renner niet gevonden"}), 404
 
-    in_ploeg = conn.execute("SELECT 1 FROM mijn_ploeg WHERE renner_id=?", (rid_uit,)).fetchone()
+    in_ploeg = conn.execute("SELECT 1 FROM mijn_ploeg WHERE renner_id=? AND user_id=?", (rid_uit, uid)).fetchone()
     if not in_ploeg:
         conn.close()
         return jsonify({"error": "Te vervangen renner zit niet meer in jouw ploeg"}), 400
@@ -1479,14 +1676,14 @@ def uitvoeren_gepland_transfer(gtid):
         return jsonify({"error": f"Onvoldoende budget (transfer kost €{kosten}M + rennerprijs €{renner_in['prijs']}M)"}), 400
 
     new_budget = round(budget - kosten, 2)
-    conn.execute("DELETE FROM mijn_ploeg WHERE renner_id=?", (rid_uit,))
-    conn.execute("INSERT OR REPLACE INTO mijn_ploeg (renner_id) VALUES (?)", (rid_in,))
+    conn.execute("DELETE FROM mijn_ploeg WHERE renner_id=? AND user_id=?", (rid_uit, uid))
+    conn.execute("INSERT OR REPLACE INTO mijn_ploeg (renner_id, user_id) VALUES (?,?)", (rid_in, uid))
     conn.execute(
-        "INSERT INTO transfers (renner_uit_id, renner_in_id, kosten) VALUES (?,?,?)",
-        (rid_uit, rid_in, kosten)
+        "INSERT INTO transfers (renner_uit_id, renner_in_id, kosten, user_id) VALUES (?,?,?,?)",
+        (rid_uit, rid_in, kosten, uid)
     )
-    conn.execute("UPDATE instellingen SET waarde=? WHERE sleutel='transfer_count'", (str(volgende),))
-    conn.execute("UPDATE instellingen SET waarde=? WHERE sleutel='budget'", (str(new_budget),))
+    _set_user_inst_val(conn, 'transfer_count', str(volgende))
+    _set_user_inst_val(conn, 'budget', str(new_budget))
     conn.execute("DELETE FROM geplande_transfers WHERE id=?", (gtid,))
     conn.commit()
     conn.close()
@@ -1497,6 +1694,7 @@ def uitvoeren_gepland_transfer(gtid):
 
 @app.route("/api/suggesties")
 def get_suggesties():
+    uid = current_user_id()
     conn = get_db()
     inst = _get_inst(conn)
     budget_rest = float(request.args.get("budget", 10))
@@ -1505,8 +1703,9 @@ def get_suggesties():
     ploeg_ploegen = conn.execute("""
         SELECT r.ploeg, COUNT(*) as cnt
         FROM mijn_ploeg m JOIN renners r ON r.id=m.renner_id
+        WHERE m.user_id=?
         GROUP BY r.ploeg
-    """).fetchall()
+    """, (uid,)).fetchall()
     volle_ploegen = {r["ploeg"] for r in ploeg_ploegen if r["cnt"] >= max_per_ploeg}
 
     suggesties = conn.execute("""
@@ -1514,12 +1713,12 @@ def get_suggesties():
                ROUND(CAST(r.totaal_punten AS REAL) / NULLIF(r.prijs, 0), 2) as ratio
         FROM renners r
         WHERE r.actief = 1
-          AND r.id NOT IN (SELECT renner_id FROM mijn_ploeg)
+          AND r.id NOT IN (SELECT renner_id FROM mijn_ploeg WHERE user_id=?)
           AND r.prijs <= ?
           AND r.totaal_punten > 0
         ORDER BY ratio DESC
         LIMIT 30
-    """, (budget_rest,)).fetchall()
+    """, (uid, budget_rest,)).fetchall()
 
     if not suggesties:
         suggesties = conn.execute("""
@@ -1527,11 +1726,11 @@ def get_suggesties():
                    0.0 as ratio
             FROM renners r
             WHERE r.actief = 1
-              AND r.id NOT IN (SELECT renner_id FROM mijn_ploeg)
+              AND r.id NOT IN (SELECT renner_id FROM mijn_ploeg WHERE user_id=?)
               AND r.prijs <= ?
             ORDER BY r.prijs DESC
             LIMIT 30
-        """, (budget_rest,)).fetchall()
+        """, (uid, budget_rest,)).fetchall()
 
     result = []
     for s in suggesties:
@@ -1547,6 +1746,7 @@ def get_suggesties():
 
 @app.route("/api/koersen")
 def get_koersen():
+    uid = current_user_id()
     conn = get_db()
     koersen = conn.execute("""
         SELECT k.*,
@@ -1556,18 +1756,18 @@ def get_koersen():
                (SELECT re.naam FROM renners re WHERE re.id = k.winnaar_id) as winnaar_naam,
                (SELECT re.foto FROM opstelling op2
                 JOIN renners re ON re.id = op2.renner_id
-                WHERE op2.koers_id = k.id AND op2.is_kopman = 1
+                WHERE op2.koers_id = k.id AND op2.is_kopman = 1 AND op2.user_id = ?
                 LIMIT 1) as kopman_foto,
                (SELECT re.naam FROM opstelling op2
                 JOIN renners re ON re.id = op2.renner_id
-                WHERE op2.koers_id = k.id AND op2.is_kopman = 1
+                WHERE op2.koers_id = k.id AND op2.is_kopman = 1 AND op2.user_id = ?
                 LIMIT 1) as kopman_naam
         FROM koersen k
-        LEFT JOIN opstelling o ON o.koers_id = k.id
-        LEFT JOIN resultaten res ON res.koers_id = k.id AND res.renner_id = o.renner_id
+        LEFT JOIN opstelling o ON o.koers_id = k.id AND o.user_id = ?
+        LEFT JOIN resultaten res ON res.koers_id = k.id AND res.renner_id = o.renner_id AND res.user_id = ?
         GROUP BY k.id
         ORDER BY k.datum ASC
-    """).fetchall()
+    """, (uid, uid, uid, uid)).fetchall()
     conn.close()
     return jsonify([dict(k) for k in koersen])
 
@@ -1617,6 +1817,7 @@ def delete_koers(kid):
 
 @app.route("/api/koersen/<int:kid>/opstelling")
 def get_opstelling(kid):
+    uid = current_user_id()
     conn = get_db()
     inst = _get_inst(conn)
     max_opstelling = int(inst.get("max_starters", 12))
@@ -1627,9 +1828,10 @@ def get_opstelling(kid):
                COALESCE(o.is_kopman, 0) as is_kopman
         FROM mijn_ploeg m
         JOIN renners r ON r.id = m.renner_id
-        LEFT JOIN opstelling o ON o.renner_id = r.id AND o.koers_id = ?
+        LEFT JOIN opstelling o ON o.renner_id = r.id AND o.koers_id = ? AND o.user_id = ?
+        WHERE m.user_id = ?
         ORDER BY r.prijs DESC
-    """, (kid,)).fetchall()
+    """, (kid, uid, uid)).fetchall()
 
     cnt = sum(1 for r in renners if r["in_opstelling"])
     conn.close()
@@ -1642,6 +1844,7 @@ def get_opstelling(kid):
 
 @app.route("/api/koersen/<int:kid>/opstelling", methods=["POST"])
 def set_opstelling(kid):
+    uid = current_user_id()
     data = request.json
     renner_ids = data.get("renner_ids", [])
     kopman_id = data.get("kopman_id")
@@ -1654,12 +1857,12 @@ def set_opstelling(kid):
         conn.close()
         return jsonify({"error": f"Max {max_opstelling} renners in de opstelling"}), 400
 
-    conn.execute("DELETE FROM opstelling WHERE koers_id=?", (kid,))
+    conn.execute("DELETE FROM opstelling WHERE koers_id=? AND user_id=?", (kid, uid))
     for rid in renner_ids:
         is_kop = 1 if rid == kopman_id else 0
         conn.execute(
-            "INSERT INTO opstelling (koers_id, renner_id, is_kopman) VALUES (?,?,?)",
-            (kid, rid, is_kop)
+            "INSERT INTO opstelling (koers_id, renner_id, user_id, is_kopman) VALUES (?,?,?,?)",
+            (kid, rid, uid, is_kop)
         )
 
     conn.commit()
@@ -1682,11 +1885,13 @@ def get_deelnemers(kid):
         conn.close()
         return jsonify({"error": f"Geen ProCyclingStats koppeling voor '{koers['naam']}'"}), 404
 
+    uid = current_user_id()
     ploeg = conn.execute("""
         SELECT r.id, r.naam, r.ploeg as renner_ploeg, r.rol, r.prijs, r.totaal_punten, r.foto
         FROM mijn_ploeg m JOIN renners r ON r.id = m.renner_id
+        WHERE m.user_id = ?
         ORDER BY r.prijs DESC
-    """).fetchall()
+    """, (uid,)).fetchall()
     conn.close()
 
     year = koers['datum'][:4]
@@ -1768,13 +1973,15 @@ def get_uitslag_pcs(kid):
         conn.close()
         return jsonify({"error": f"Geen ProCyclingStats koppeling voor '{koers['naam']}'"}), 404
 
+    uid = current_user_id()
     ploeg = conn.execute("""
         SELECT r.id, r.naam, r.ploeg as renner_ploeg, r.rol, r.prijs, r.foto
         FROM mijn_ploeg m JOIN renners r ON r.id = m.renner_id
-    """).fetchall()
+        WHERE m.user_id = ?
+    """, (uid,)).fetchall()
 
     opstelling_rows = conn.execute(
-        "SELECT renner_id, is_kopman FROM opstelling WHERE koers_id=?", (kid,)
+        "SELECT renner_id, is_kopman FROM opstelling WHERE koers_id=? AND user_id=?", (kid, uid)
     ).fetchall()
     opstelling_ids = {r["renner_id"] for r in opstelling_rows}
     kopman_id = next((r["renner_id"] for r in opstelling_rows if r["is_kopman"]), None)
@@ -2044,12 +2251,13 @@ def get_koers_favorieten(kid):
         return jsonify([])
 
     # Laad huidige ploeg en opstelling voor name-matching
+    uid = current_user_id()
     ploeg = conn.execute(
-        "SELECT r.naam FROM mijn_ploeg m JOIN renners r ON r.id = m.renner_id"
+        "SELECT r.naam FROM mijn_ploeg m JOIN renners r ON r.id = m.renner_id WHERE m.user_id=?", (uid,)
     ).fetchall()
     opstelling = conn.execute(
-        "SELECT r.naam FROM opstelling o JOIN renners r ON r.id = o.renner_id WHERE o.koers_id=?",
-        (kid,)
+        "SELECT r.naam FROM opstelling o JOIN renners r ON r.id = o.renner_id WHERE o.koers_id=? AND o.user_id=?",
+        (kid, uid)
     ).fetchall()
     alias_map = _get_alias_map(conn)
     conn.close()
@@ -2094,12 +2302,13 @@ def fetch_koers_favorieten(kid):
     conn.commit()
 
     # Match tegen huidige ploeg & opstelling voor de response
+    uid = current_user_id()
     ploeg = conn.execute(
-        "SELECT r.naam FROM mijn_ploeg m JOIN renners r ON r.id = m.renner_id"
+        "SELECT r.naam FROM mijn_ploeg m JOIN renners r ON r.id = m.renner_id WHERE m.user_id=?", (uid,)
     ).fetchall()
     opstelling = conn.execute(
-        "SELECT r.naam FROM opstelling o JOIN renners r ON r.id = o.renner_id WHERE o.koers_id=?",
-        (kid,)
+        "SELECT r.naam FROM opstelling o JOIN renners r ON r.id = o.renner_id WHERE o.koers_id=? AND o.user_id=?",
+        (kid, uid)
     ).fetchall()
     alias_map = _get_alias_map(conn)
     conn.close()
@@ -2120,6 +2329,7 @@ def fetch_koers_favorieten(kid):
 
 @app.route("/api/koersen/<int:kid>/beste-opstelling")
 def beste_opstelling(kid):
+    uid = current_user_id()
     conn = get_db()
     inst = _get_inst(conn)
     max_opstelling = int(inst.get("max_starters", 12))
@@ -2132,10 +2342,11 @@ def beste_opstelling(kid):
                CASE WHEN o.renner_id IS NOT NULL THEN 1 ELSE 0 END as in_opstelling
         FROM mijn_ploeg m
         JOIN renners re ON re.id = m.renner_id
-        LEFT JOIN resultaten r ON r.renner_id = re.id AND r.koers_id = ?
-        LEFT JOIN opstelling o ON o.renner_id = re.id AND o.koers_id = ?
+        LEFT JOIN resultaten r ON r.renner_id = re.id AND r.koers_id = ? AND r.user_id = ?
+        LEFT JOIN opstelling o ON o.renner_id = re.id AND o.koers_id = ? AND o.user_id = ?
+        WHERE m.user_id = ?
         ORDER BY COALESCE(r.punten, 0) DESC, re.prijs DESC
-    """, (kid, kid)).fetchall()
+    """, (kid, uid, kid, uid, uid)).fetchall()
     conn.close()
 
     alle = [dict(r) for r in resultaten]
@@ -2153,6 +2364,7 @@ def beste_opstelling(kid):
 
 @app.route("/api/koersen/<int:kid>/resultaten")
 def get_resultaten(kid):
+    uid = current_user_id()
     conn = get_db()
     resultaten = conn.execute("""
         SELECT r.*, re.naam, re.ploeg as renner_ploeg, re.rol, re.prijs, re.foto,
@@ -2161,11 +2373,11 @@ def get_resultaten(kid):
                COALESCE(o.is_kopman, 0) as is_kopman
         FROM resultaten r
         JOIN renners re ON re.id = r.renner_id
-        LEFT JOIN mijn_ploeg m ON m.renner_id = r.renner_id
-        LEFT JOIN opstelling o ON o.renner_id = r.renner_id AND o.koers_id = r.koers_id
-        WHERE r.koers_id = ?
+        LEFT JOIN mijn_ploeg m ON m.renner_id = r.renner_id AND m.user_id = ?
+        LEFT JOIN opstelling o ON o.renner_id = r.renner_id AND o.koers_id = r.koers_id AND o.user_id = ?
+        WHERE r.koers_id = ? AND r.user_id = ?
         ORDER BY r.positie ASC NULLS LAST, r.punten DESC
-    """, (kid,)).fetchall()
+    """, (uid, uid, kid, uid)).fetchall()
     conn.close()
     return jsonify([dict(r) for r in resultaten])
 
@@ -2214,6 +2426,7 @@ def add_resultaten_bulk(kid):
         winnaar_naam = (payload.get('winnaar_naam') or '').strip()
         winnaar_ploeg = (payload.get('winnaar_ploeg') or '').strip()
 
+    uid = current_user_id()
     conn = get_db()
 
     koers = conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone()
@@ -2223,9 +2436,9 @@ def add_resultaten_bulk(kid):
 
     soort = koers["soort"]
 
-    # Haal de opstelling op voor deze koers
+    # Haal de opstelling op voor deze koers (user-specifiek)
     opstelling_rows = conn.execute(
-        "SELECT renner_id, is_kopman FROM opstelling WHERE koers_id=?", (kid,)
+        "SELECT renner_id, is_kopman FROM opstelling WHERE koers_id=? AND user_id=?", (kid, uid)
     ).fetchall()
     opstelling_ids = {r["renner_id"] for r in opstelling_rows}
     kopman_id = next((r["renner_id"] for r in opstelling_rows if r["is_kopman"]), None)
@@ -2249,9 +2462,9 @@ def add_resultaten_bulk(kid):
 
             conn.execute("""
                 INSERT OR REPLACE INTO resultaten
-                  (koers_id, renner_id, positie, punten, bonuspunten_kopman, bonuspunten_ploegmaat)
-                VALUES (?,?,?,?,?,?)
-            """, (kid, rid, pos, totaal, bonus_kopman, bonus_ploegmaat))
+                  (koers_id, renner_id, user_id, positie, punten, bonuspunten_kopman, bonuspunten_ploegmaat)
+                VALUES (?,?,?,?,?,?,?)
+            """, (kid, rid, uid, pos, totaal, bonus_kopman, bonus_ploegmaat))
 
         for r in data:
             conn.execute("""
@@ -2285,12 +2498,19 @@ def add_resultaten_bulk(kid):
 
 @app.route("/api/sporza-session", methods=["GET"])
 def get_sporza_session():
+    uid = current_user_id()
     conn = get_db()
     # Cleanup: verwijder ongeldige VT/RT waarden (bijv. opgeslagen placeholder '••••••••')
-    for sleutel in ('sporza_cookie_vt', 'sporza_cookie_rt', 'sporza_cookie'):
+    for sleutel_base in ('sporza_cookie_vt', 'sporza_cookie_rt', 'sporza_cookie'):
+        sleutel = f"{sleutel_base}_{uid}"
         row = conn.execute(
             "SELECT waarde FROM instellingen WHERE sleutel=?", (sleutel,)
         ).fetchone()
+        if not row:
+            # Fallback naar ongesuffixte key (backward compat)
+            row = conn.execute(
+                "SELECT waarde FROM instellingen WHERE sleutel=?", (sleutel_base,)
+            ).fetchone()
         if row and row['waarde'] and not _sanitize_cookie(row['waarde']):
             conn.execute(
                 "UPDATE instellingen SET waarde='' WHERE sleutel=?", (sleutel,)
@@ -2298,18 +2518,14 @@ def get_sporza_session():
             conn.commit()
     # Auto-refresh als AT verlopen is én we een RT hebben
     at = _get_sporza_at(conn)
-    vt_row = conn.execute(
-        "SELECT waarde FROM instellingen WHERE sleutel='sporza_cookie_vt'"
-    ).fetchone()
-    rt_row = conn.execute(
-        "SELECT waarde FROM instellingen WHERE sleutel='sporza_cookie_rt'"
-    ).fetchone()
+    vt = _get_user_inst_val(conn, 'sporza_cookie_vt')
+    rt = _get_user_inst_val(conn, 'sporza_cookie_rt')
     conn.close()
     verlopen = _jwt_verlopen(at) if at else False
     return jsonify({
         "configured": bool(at),
-        "vt_configured": bool(vt_row and vt_row["waarde"]),
-        "rt_configured": bool(rt_row and rt_row["waarde"]),
+        "vt_configured": bool(vt),
+        "rt_configured": bool(rt),
         "verlopen": verlopen,
     })
 
@@ -2336,20 +2552,11 @@ def set_sporza_session():
         return jsonify({"error": "Geen cookie opgegeven"}), 400
     conn = get_db()
     if cookie:
-        conn.execute(
-            "INSERT OR REPLACE INTO instellingen (sleutel, waarde) VALUES ('sporza_cookie', ?)",
-            (cookie,)
-        )
+        _set_user_inst_val(conn, 'sporza_cookie', cookie)
     if cookie_vt:
-        conn.execute(
-            "INSERT OR REPLACE INTO instellingen (sleutel, waarde) VALUES ('sporza_cookie_vt', ?)",
-            (cookie_vt,)
-        )
+        _set_user_inst_val(conn, 'sporza_cookie_vt', cookie_vt)
     if cookie_rt:
-        conn.execute(
-            "INSERT OR REPLACE INTO instellingen (sleutel, waarde) VALUES ('sporza_cookie_rt', ?)",
-            (cookie_rt,)
-        )
+        _set_user_inst_val(conn, 'sporza_cookie_rt', cookie_rt)
     conn.commit()
     # Als alleen RT opgegeven: probeer meteen een verse AT te halen
     if cookie_rt and not cookie:
@@ -2379,10 +2586,7 @@ def _jwt_verlopen(token):  # ook gebruikt in get_sporza_session
 def _refresh_sporza_at(conn):
     """Vernieuw de Sporza AT via de opgeslagen RT cookie.
     Geeft de nieuwe AT-waarde terug, of None als refresh mislukt."""
-    rt_row = conn.execute(
-        "SELECT waarde FROM instellingen WHERE sleutel='sporza_cookie_rt'"
-    ).fetchone()
-    rt = (rt_row['waarde'] if rt_row and rt_row['waarde'] else '').strip()
+    rt = (_get_user_inst_val(conn, 'sporza_cookie_rt') or '').strip()
     if not rt:
         app.logger.warning("_refresh_sporza_at: geen RT opgeslagen")
         return None
@@ -2413,10 +2617,7 @@ def _refresh_sporza_at(conn):
                         new_at = val
                         break
         if new_at and new_at != 'deleted':
-            conn.execute(
-                "INSERT OR REPLACE INTO instellingen (sleutel, waarde) VALUES ('sporza_cookie', ?)",
-                (new_at,)
-            )
+            _set_user_inst_val(conn, 'sporza_cookie', new_at)
             conn.commit()
             app.logger.info("_refresh_sporza_at: nieuwe AT opgeslagen ✅")
             return new_at
@@ -2428,10 +2629,7 @@ def _refresh_sporza_at(conn):
 
 def _get_sporza_at(conn):
     """Haal de Sporza AT op en vernieuw automatisch via RT als het token verlopen is."""
-    row = conn.execute(
-        "SELECT waarde FROM instellingen WHERE sleutel='sporza_cookie'"
-    ).fetchone()
-    at = (row['waarde'] if row and row['waarde'] else '').strip()
+    at = (_get_user_inst_val(conn, 'sporza_cookie') or '').strip()
     # Refresh als AT leeg is OF verlopen — zodat ook RT-only setup werkt
     if (not at) or _jwt_verlopen(at):
         new_at = _refresh_sporza_at(conn)
@@ -2683,19 +2881,21 @@ def sporza_mini_team(slug, team_code):
 @app.route("/api/sporza-mini/transfers", methods=["GET"])
 def sporza_mini_transfer_tips():
     """Transfer suggesties op basis van renners in mini-competitie ploegen."""
+    uid = current_user_id()
     conn = get_db()
 
     # Eigen ploeg uit DB
     eigen_ploeg = conn.execute("""
         SELECT r.id, r.naam, r.prijs, r.totaal_punten
         FROM mijn_ploeg m JOIN renners r ON r.id = m.renner_id
-    """).fetchall()
+        WHERE m.user_id = ?
+    """, (uid,)).fetchall()
     eigen_lijst = [dict(r) for r in eigen_ploeg]
     eigen_namen_norm = {_norm(r["naam"]) for r in eigen_lijst}
 
     # Budget resterend berekenen
-    budget_rij = conn.execute("SELECT waarde FROM instellingen WHERE sleutel='budget'").fetchone()
-    budget = float(budget_rij["waarde"]) if budget_rij else 100.0
+    inst = _get_inst(conn)
+    budget = float(inst.get("budget", 100.0))
     uitgegeven = sum(r["prijs"] for r in eigen_ploeg)
     budget_rest = round(budget - uitgegeven, 2)
 
@@ -2896,9 +3096,10 @@ def _doorzetten_sporza_impl(kid):
         conn.close()
         return jsonify({"error": f"Geen Sporza WM koppeling voor '{koers['naam']}'"}), 404
 
+    uid = current_user_id()
     # Haal de opstelling op (min. 12 renners vereist)
     opstelling_rows = conn.execute(
-        "SELECT renner_id, is_kopman FROM opstelling WHERE koers_id=?", (kid,)
+        "SELECT renner_id, is_kopman FROM opstelling WHERE koers_id=? AND user_id=?", (kid, uid)
     ).fetchall()
     opstelling_ids = {r["renner_id"] for r in opstelling_rows}
     kopman_id = next((r["renner_id"] for r in opstelling_rows if r["is_kopman"]), None)
@@ -2910,14 +3111,13 @@ def _doorzetten_sporza_impl(kid):
     # Haal lokale rennersnamen op
     mijn_ploeg = conn.execute("""
         SELECT r.id, r.naam FROM mijn_ploeg m JOIN renners r ON r.id = m.renner_id
-    """).fetchall()
+        WHERE m.user_id = ?
+    """, (uid,)).fetchall()
 
     sporza_cookie = _get_sporza_at(conn)
 
     # Haal ook de VT cookie op (optioneel maar verhoogt kans van slagen)
-    vt_row = conn.execute(
-        "SELECT waarde FROM instellingen WHERE sleutel='sporza_cookie_vt'"
-    ).fetchone()
+    sporza_cookie_vt_val = (_get_user_inst_val(conn, 'sporza_cookie_vt') or '').strip()
     conn.close()
 
     if not sporza_cookie:
@@ -2926,7 +3126,7 @@ def _doorzetten_sporza_impl(kid):
     if _jwt_verlopen(sporza_cookie):
         return jsonify({"error": "Sporza sessie verlopen. Stel je cookie opnieuw in via Instellingen.", "verlopen": True}), 401
 
-    sporza_cookie_vt = (vt_row["waarde"] if vt_row and vt_row["waarde"] else "").strip()
+    sporza_cookie_vt = sporza_cookie_vt_val
 
     def _base_headers(content_type=None):
         h = {
@@ -3246,17 +3446,19 @@ def get_koers_live(kid):
         conn.close()
         return jsonify({"error": "Koers niet gevonden"}), 404
 
+    uid = current_user_id()
     # Eigen opstelling voor in-ploeg markers
     opstelling_namen = {
         r["naam"] for r in conn.execute("""
             SELECT r.naam FROM opstelling o
             JOIN renners r ON r.id = o.renner_id
-            WHERE o.koers_id = ?
-        """, (kid,)).fetchall()
+            WHERE o.koers_id = ? AND o.user_id = ?
+        """, (kid, uid)).fetchall()
     }
     ploeg_namen = {
         r["naam"] for r in conn.execute(
-            "SELECT r.naam FROM mijn_ploeg m JOIN renners r ON r.id=m.renner_id"
+            "SELECT r.naam FROM mijn_ploeg m JOIN renners r ON r.id=m.renner_id WHERE m.user_id=?",
+            (uid,)
         ).fetchall()
     }
 
@@ -3851,38 +4053,40 @@ def sporza_verbinding_test():
 
 @app.route("/api/stats")
 def get_stats():
+    uid = current_user_id()
     conn = get_db()
 
     # Enkel punten voor renners die in de opstelling stonden voor die koers
     totaal = conn.execute("""
         SELECT COALESCE(SUM(r.punten), 0) as punten
         FROM resultaten r
-        JOIN opstelling o ON o.renner_id = r.renner_id AND o.koers_id = r.koers_id
-        WHERE r.renner_id IN (SELECT renner_id FROM mijn_ploeg)
-    """).fetchone()["punten"]
+        JOIN opstelling o ON o.renner_id = r.renner_id AND o.koers_id = r.koers_id AND o.user_id = ?
+        WHERE r.user_id = ?
+    """, (uid, uid)).fetchone()["punten"]
 
     punten_per_koers = conn.execute("""
         SELECT k.naam, k.datum, k.soort,
                COALESCE(SUM(r.punten), 0) as punten
         FROM koersen k
-        LEFT JOIN opstelling o ON o.koers_id = k.id
-        LEFT JOIN resultaten r ON r.koers_id = k.id AND r.renner_id = o.renner_id
+        LEFT JOIN opstelling o ON o.koers_id = k.id AND o.user_id = ?
+        LEFT JOIN resultaten r ON r.koers_id = k.id AND r.renner_id = o.renner_id AND r.user_id = ?
         WHERE k.afgelopen = 1
         GROUP BY k.id
         ORDER BY k.datum ASC
-    """).fetchall()
+    """, (uid, uid)).fetchall()
 
     top_renners = conn.execute("""
         SELECT re.id, re.naam, re.ploeg, re.rol,
                SUM(r.punten) as punten
         FROM resultaten r
         JOIN renners re ON re.id = r.renner_id
-        JOIN opstelling o ON o.renner_id = r.renner_id AND o.koers_id = r.koers_id
-        WHERE r.renner_id IN (SELECT renner_id FROM mijn_ploeg)
+        JOIN opstelling o ON o.renner_id = r.renner_id AND o.koers_id = r.koers_id AND o.user_id = ?
+        WHERE r.user_id = ?
+          AND r.renner_id IN (SELECT renner_id FROM mijn_ploeg WHERE user_id = ?)
         GROUP BY r.renner_id
         HAVING SUM(r.punten) > 0
         ORDER BY punten DESC
-    """).fetchall()
+    """, (uid, uid, uid)).fetchall()
 
     kopman_stats = conn.execute("""
         SELECT re.id, re.naam, re.ploeg, re.foto,
@@ -3890,12 +4094,13 @@ def get_stats():
                COALESCE(SUM(r.bonuspunten_kopman), 0) as bonus_punten
         FROM opstelling o
         JOIN renners re ON re.id = o.renner_id
-        LEFT JOIN resultaten r ON r.renner_id = o.renner_id AND r.koers_id = o.koers_id
+        LEFT JOIN resultaten r ON r.renner_id = o.renner_id AND r.koers_id = o.koers_id AND r.user_id = ?
         WHERE o.is_kopman = 1
-          AND o.renner_id IN (SELECT renner_id FROM mijn_ploeg)
+          AND o.user_id = ?
+          AND o.renner_id IN (SELECT renner_id FROM mijn_ploeg WHERE user_id = ?)
         GROUP BY re.id
         ORDER BY bonus_punten DESC
-    """).fetchall()
+    """, (uid, uid, uid)).fetchall()
 
     inst = _get_inst(conn)
     conn.close()
@@ -3913,6 +4118,7 @@ def get_stats():
 
 def _build_ai_context(conn):
     """Bouw een context-string op vanuit de database voor de AI-assistent."""
+    uid = current_user_id()
     inst = _get_inst(conn)
     budget = float(inst.get("budget", 120))
     max_renners = int(inst.get("max_renners", 20))
@@ -3925,8 +4131,9 @@ def _build_ai_context(conn):
                r.totaal_punten, r.geblesseerd
         FROM mijn_ploeg m
         JOIN renners r ON r.id = m.renner_id
+        WHERE m.user_id = ?
         ORDER BY r.prijs DESC
-    """).fetchall()
+    """, (uid,)).fetchall()
 
     uitgegeven = sum(r["prijs"] for r in ploeg)
     budget_resterend = round(budget - uitgegeven, 2)
@@ -3939,10 +4146,10 @@ def _build_ai_context(conn):
         SELECT naam, ploeg, rol, prijs, totaal_punten
         FROM renners
         WHERE actief = 1
-          AND id NOT IN (SELECT renner_id FROM mijn_ploeg)
+          AND id NOT IN (SELECT renner_id FROM mijn_ploeg WHERE user_id = ?)
         ORDER BY totaal_punten DESC
         LIMIT 20
-    """).fetchall()
+    """, (uid,)).fetchall()
 
     ploeg_lines = "\n".join(
         f"  - {r['naam']} ({r['renner_ploeg']}, {r['rol']}, "
@@ -4125,15 +4332,17 @@ Voeg dit blok NIET toe bij algemene vragen of analyses zonder specifieke wissel.
             in_naam  = tj.get("renner_in", "")
             reden    = tj.get("reden", "")
 
+            _ai_uid = current_user_id()
             ploeg_renners = conn.execute("""
                 SELECT r.id, r.naam, r.prijs
                 FROM mijn_ploeg m JOIN renners r ON r.id = m.renner_id
-            """).fetchall()
+                WHERE m.user_id = ?
+            """, (_ai_uid,)).fetchall()
 
             alle_renners = conn.execute("""
                 SELECT id, naam, prijs FROM renners
-                WHERE actief = 1 AND id NOT IN (SELECT renner_id FROM mijn_ploeg)
-            """).fetchall()
+                WHERE actief = 1 AND id NOT IN (SELECT renner_id FROM mijn_ploeg WHERE user_id = ?)
+            """, (_ai_uid,)).fetchall()
 
             renner_uit = next((r for r in ploeg_renners if _name_match(r["naam"], {_norm(uit_naam)})), None)
             renner_in  = next((r for r in alle_renners  if _name_match(r["naam"], {_norm(in_naam)})),  None)
