@@ -3488,7 +3488,7 @@ async function renderInstellingen() {
         <div class="form-group"><label class="form-label">Competitie naam</label>
           <input class="form-input" name="competitie" value="${inst.competitie || state.currentUser?.seizoen_naam || 'Wielermanager'}" /></div>
         <div class="form-group"><label class="form-label">Budget (€M)</label>
-          <input class="form-input" name="budget" type="number" min="10" max="200" step="1" value="${inst.budget || 120}" /></div>
+          <input class="form-input" name="budget" type="number" min="10" max="300" step="0.5" value="${inst.budget || 150}" /></div>
         <div class="form-row">
           <div class="form-group"><label class="form-label">Max Renners in Ploeg</label>
             <input class="form-input" name="max_renners" type="number" min="5" max="30" value="${inst.max_renners || 20}" /></div>

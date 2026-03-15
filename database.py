@@ -95,10 +95,10 @@ def init_db():
         );
     """)
 
-    # Echte spelregels Sporza Wielermanager Voorjaar Mannen 2026
+    # Echte spelregels Sporza Wielermanager
     c.execute("""
         INSERT OR IGNORE INTO instellingen (sleutel, waarde) VALUES
-        ('budget', '120'),
+        ('budget', '150'),
         ('max_renners', '20'),
         ('max_starters', '12'),
         ('max_bus', '8'),
@@ -108,6 +108,10 @@ def init_db():
         ('seizoen', '2026'),
         ('competitie', 'Voorjaar Mannen 2026')
     """)
+    # Migratie: verhoog de globale budget-default van 120 naar 150 als die nog op de oude waarde staat
+    conn.execute(
+        "UPDATE instellingen SET waarde='150' WHERE sleutel='budget' AND CAST(waarde AS REAL) <= 120"
+    )
 
     # Migraties: kolommen toevoegen als ze nog niet bestaan
     try:

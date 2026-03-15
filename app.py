@@ -1680,7 +1680,7 @@ def get_mijn_ploeg():
     conn = get_db()
     sid = current_seizoen_id(conn)
     inst = _get_inst(conn, uid, sid=sid)
-    budget = float(inst.get("budget", 120))
+    budget = float(inst.get("budget", 150))
 
     ploeg = conn.execute("""
         SELECT r.id, r.naam, r.ploeg as renner_ploeg, r.rol, r.prijs, r.totaal_punten,
@@ -1760,7 +1760,7 @@ def add_to_ploeg():
     sid = current_seizoen_id(conn)
     inst = _get_inst(conn, uid, sid=sid)
 
-    budget = float(inst.get("budget", 120))
+    budget = float(inst.get("budget", 150))
     max_renners = int(inst.get("max_renners", 20))
     max_per_ploeg = int(inst.get("max_per_ploeg", 4))
 
@@ -1823,7 +1823,7 @@ def get_transfer_kosten():
     gratis = int(inst.get("transfers_gratis", 3))
     volgende = count + 1
     kosten = transfer_kosten(volgende, gratis)
-    budget_rest = float(inst.get("budget", 120))
+    budget_rest = float(inst.get("budget", 150))
     ploeg = conn.execute(
         "SELECT r.prijs FROM mijn_ploeg m JOIN renners r ON r.id=m.renner_id WHERE m.user_id=? AND m.seizoen_id=?",
         (uid, sid)
@@ -1849,7 +1849,7 @@ def do_transfer():
     conn = get_db()
     sid = current_seizoen_id(conn)
     inst = _get_inst(conn, uid, sid=sid)
-    budget = float(inst.get("budget", 120))
+    budget = float(inst.get("budget", 150))
     count = int(inst.get("transfer_count", 0))
     gratis = int(inst.get("transfers_gratis", 3))
 
@@ -1980,7 +1980,7 @@ def uitvoeren_gepland_transfer(gtid):
     rid_in  = gt["renner_in_id"]
 
     inst = _get_inst(conn, uid, sid=sid)
-    budget = float(inst.get("budget", 120))
+    budget = float(inst.get("budget", 150))
     count  = int(inst.get("transfer_count", 0))
     gratis = int(inst.get("transfers_gratis", 3))
     volgende = count + 1
@@ -4493,7 +4493,7 @@ def _build_ai_context(conn):
     seizoen_row = conn.execute("SELECT naam FROM seizoenen WHERE id=?", (sid,)).fetchone()
     seizoen_naam = seizoen_row["naam"] if seizoen_row else "Seizoen"
     inst = _get_inst(conn, uid, sid=sid)
-    budget = float(inst.get("budget", 120))
+    budget = float(inst.get("budget", 150))
     max_renners = int(inst.get("max_renners", 20))
     transfers_gratis = int(inst.get("transfers_gratis", 3))
     transfer_count = int(inst.get("transfer_count", 0))
@@ -4724,7 +4724,7 @@ Voeg dit blok NIET toe bij algemene vragen of analyses zonder specifieke wissel.
             inst   = _get_inst(conn, _ai_uid, sid=_ai_sid)
             count  = int(inst.get("transfer_count", 0))
             gratis = int(inst.get("transfers_gratis", 3))
-            budget = float(inst.get("budget", 120))
+            budget = float(inst.get("budget", 150))
             kosten = transfer_kosten(count + 1, gratis)
 
             budget_na = None
