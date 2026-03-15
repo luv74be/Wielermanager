@@ -1716,10 +1716,10 @@ async function renderKoersDetail() {
 
     ${profielCard}
 
-    <div class="grid-2">
+    <div class="${koers.afgelopen === 1 ? '' : 'grid-2'}">
 
       <!-- ── Opstelling ───────────────────────────────────────── -->
-      <div class="card">
+      ${koers.afgelopen === 1 ? '' : `<div class="card">`}
         <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
           👥 Opstelling
           <span id="detail-ops-teller" style="font-size:0.85rem;font-weight:400;color:${opstellingData.huidig_aantal === max ? 'var(--green)' : 'var(--muted)'}">
@@ -1773,7 +1773,7 @@ async function renderKoersDetail() {
             onclick="slaDetailOpstellingOp(${kid},${max})">
             💾 Opstelling Opslaan
           </button>` : ''}
-      </div>
+      ${koers.afgelopen === 1 ? '' : '</div>'}
 
       <!-- ── Resultaten ──────────────────────────────────────── -->
       <div class="card">
