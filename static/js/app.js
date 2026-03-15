@@ -1594,10 +1594,9 @@ async function renderKoersDetail() {
   const koers = state.koersen.find(k => k.id === kid);
   if (!koers) return '<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-title">Wedstrijd niet gevonden</div></div>';
 
-  const [opstellingData, resultaten, besteOps, favorieten] = await Promise.all([
+  const [opstellingData, resultaten, favorieten] = await Promise.all([
     get(`/api/koersen/${kid}/opstelling`),
     get(`/api/koersen/${kid}/resultaten`),
-    koers.afgelopen === 1 ? get(`/api/koersen/${kid}/beste-opstelling`) : Promise.resolve(null),
     get(`/api/koersen/${kid}/favorieten`).catch(() => []),
   ]);
 
@@ -1871,33 +1870,6 @@ async function renderKoersDetail() {
 
     </div>
 
-    ${besteOps && besteOps.beste && besteOps.beste.length > 0 ? `
-    <div class="card mt-20">
-      <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
-        🏆 Beste Opstelling Achteraf
-        <span style="font-size:0.85rem;font-weight:400;color:var(--green)">${besteOps.beste_punten} pt max</span>
-      </div>
-      <div class="text-muted fs-sm" style="margin-bottom:10px">
-        Top ${besteOps.max} renners uit jouw ploeg op basis van behaalde punten:
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>#</th><th></th><th>Naam</th><th>Rol</th><th>Punten</th><th>In opstelling</th></tr></thead>
-          <tbody>
-            ${besteOps.beste.map((r, i) => `<tr ${!r.in_opstelling && r.punten === 0 ? 'style="opacity:0.45"' : ''}>
-              <td class="text-muted">${i+1}</td>
-              <td style="width:32px;padding-right:0">${avatarHtml(r)}</td>
-              <td class="fw-700" style="cursor:pointer" ondblclick="openRennerDetail(${r.id})">${r.naam}</td>
-              <td>${rolBadge(r.rol)}</td>
-              <td class="fw-700 ${r.punten > 0 ? 'text-green' : 'text-muted'}">${r.punten}</td>
-              <td style="text-align:center">${r.in_opstelling
-                ? '<span style="color:var(--green);font-weight:700">✓</span>'
-                : '<span style="color:var(--red)">✗</span>'}</td>
-            </tr>`).join('')}
-          </tbody>
-        </table>
-      </div>
-    </div>` : ''}
   `;
 }
 
