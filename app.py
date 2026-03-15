@@ -4237,13 +4237,14 @@ def get_stats():
     conn = get_db()
     sid = current_seizoen_id(conn)
 
-    # Enkel punten voor renners die in de opstelling stonden voor die koers
+    # Enkel punten voor renners die in de opstelling stonden voor die koers, gefilterd op seizoen
     totaal = conn.execute("""
         SELECT COALESCE(SUM(r.punten), 0) as punten
         FROM resultaten r
+        JOIN koersen k ON k.id = r.koers_id AND k.seizoen_id = ?
         JOIN opstelling o ON o.renner_id = r.renner_id AND o.koers_id = r.koers_id AND o.user_id = ?
         WHERE r.user_id = ?
-    """, (uid, uid)).fetchone()["punten"]
+    """, (sid, uid, uid)).fetchone()["punten"]
 
     punten_per_koers = conn.execute("""
         SELECT k.naam, k.datum, k.soort,
@@ -4301,6 +4302,8 @@ def _build_ai_context(conn):
     """Bouw een context-string op vanuit de database voor de AI-assistent."""
     uid = current_user_id()
     sid = current_seizoen_id(conn)
+    seizoen_row = conn.execute("SELECT naam FROM seizoenen WHERE id=?", (sid,)).fetchone()
+    seizoen_naam = seizoen_row["naam"] if seizoen_row else "Seizoen"
     inst = _get_inst(conn, uid, sid=sid)
     budget = float(inst.get("budget", 120))
     max_renners = int(inst.get("max_renners", 20))
@@ -4353,7 +4356,7 @@ def _build_ai_context(conn):
         for r in beschikbaar
     ) or "  (geen)"
 
-    return f"""WIELERMANAGER CONTEXT — Sporza Voorjaar Mannen 2026
+    return f"""WIELERMANAGER CONTEXT — Sporza {seizoen_naam}
 
 MIJN PLOEG ({len(ploeg)}/{max_renners} renners):
 {ploeg_lines}

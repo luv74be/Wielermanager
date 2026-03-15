@@ -386,7 +386,7 @@ function renderDashboard() {
 
   return `
     <div style="margin-bottom:16px">
-      <div class="page-subtitle">${instellingen.competitie || 'Voorjaar Mannen 2026'}</div>
+      <div class="page-subtitle">${state.currentUser?.seizoen_naam || instellingen.competitie || '…'}</div>
     </div>
 
     ${countdownHtml}
@@ -3083,7 +3083,7 @@ function renderSpelregels() {
   return `
     <div class="page-header">
       <div class="page-title">Spelregels</div>
-      <div class="page-subtitle">Voorjaar Mannen 2026 – Sporza Wielermanager</div>
+      <div class="page-subtitle">${state.currentUser?.seizoen_naam || 'Sporza Wielermanager'} – Sporza Wielermanager</div>
     </div>
 
     <div class="grid-2">
@@ -3298,7 +3298,7 @@ async function renderInstellingen() {
       <div class="card-title">Competitie Instellingen</div>
       <form id="inst-form" style="margin-top:12px">
         <div class="form-group"><label class="form-label">Competitie naam</label>
-          <input class="form-input" name="competitie" value="${inst.competitie || 'Voorjaar Mannen 2026'}" /></div>
+          <input class="form-input" name="competitie" value="${inst.competitie || state.currentUser?.seizoen_naam || 'Wielermanager'}" /></div>
         <div class="form-group"><label class="form-label">Budget (€M)</label>
           <input class="form-input" name="budget" type="number" min="10" max="200" step="1" value="${inst.budget || 120}" /></div>
         <div class="form-row">
