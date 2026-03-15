@@ -1700,8 +1700,8 @@ async function renderKoersDetail() {
           : `<div style="margin:0 0 10px;padding:8px 12px;background:rgba(239,68,68,0.08);border-radius:8px;font-size:0.82rem;color:var(--muted)">
               Nog geen kopman aangeduid
              </div>`}
-        ${koers.afgelopen === 1
-          ? '<div class="text-muted fs-sm" style="margin-bottom:10px">De opstelling is afgesloten.</div>'
+        ${koers.afgelopen
+          ? `<div class="text-muted fs-sm" style="margin-bottom:10px">De opstelling is afgesloten.${koers.afgelopen === 2 ? ' Zet terug naar Komend om te bewerken.' : ''}</div>`
           : `<div class="text-muted fs-sm" style="margin-bottom:10px">Selecteer max ${max} renners en duid één als kopman aan.</div>`}
         <div class="table-wrap" style="max-height:420px;overflow-y:auto">
           <table>
@@ -1716,7 +1716,7 @@ async function renderKoersDetail() {
               ${renners.map(r => `<tr>
                 <td style="text-align:center">
                   <input type="checkbox" id="det-ops-${r.id}" ${r.in_opstelling ? 'checked' : ''}
-                    ${koers.afgelopen === 1 ? 'disabled' : `onchange="updateDetailOpstellingUI(${max})"`} />
+                    ${koers.afgelopen ? 'disabled' : `onchange="updateDetailOpstellingUI(${max})"`} />
                 </td>
                 <td style="padding-right:0">${avatarHtml(r)}</td>
                 <td class="fw-700" style="cursor:pointer" ondblclick="openRennerDetail(${r.id})">${r.naam}</td>
@@ -1724,13 +1724,13 @@ async function renderKoersDetail() {
                 <td style="text-align:center">
                   <input type="radio" name="det-kopman-radio" value="${r.id}"
                     ${r.is_kopman ? 'checked' : ''}
-                    ${koers.afgelopen === 1 || !r.in_opstelling ? 'disabled style="opacity:0.3"' : ''} />
+                    ${koers.afgelopen || !r.in_opstelling ? 'disabled style="opacity:0.3"' : ''} />
                 </td>
               </tr>`).join('')}
             </tbody>
           </table>
         </div>
-        ${koers.afgelopen !== 1 ? `
+        ${!koers.afgelopen ? `
           ${opstellingData.huidig_aantal === 0 ? `
             <button class="btn btn-secondary" style="width:100%;margin-bottom:8px"
               onclick="kopieerOpstelling(${kid})">
