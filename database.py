@@ -248,6 +248,93 @@ def init_db():
         except Exception:
             pass  # werkzeug niet beschikbaar → skip bootstrap
 
+    # ── Multi-seizoen: seizoenen tabel ────────────────────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS seizoenen (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            naam TEXT NOT NULL,
+            sporza_edition TEXT NOT NULL DEFAULT 'vrjr-m-26',
+            actief INTEGER DEFAULT 1,
+            aangemaakt_op TEXT DEFAULT (date('now'))
+        )
+    """)
+    conn.commit()
+    # Bootstrap: als leeg → Voorjaar Mannen 2026 met id=1
+    _sz_count = conn.execute("SELECT COUNT(*) FROM seizoenen").fetchone()[0]
+    if _sz_count == 0:
+        conn.execute(
+            "INSERT INTO seizoenen (naam, sporza_edition, actief) VALUES (?,?,1)",
+            ('Voorjaar Mannen 2026', 'vrjr-m-26')
+        )
+        conn.commit()
+
+    # ── Multi-seizoen: seizoen_id toevoegen aan renners, koersen, transfers, geplande_transfers
+    for _col_sql in [
+        "ALTER TABLE renners ADD COLUMN seizoen_id INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE koersen ADD COLUMN seizoen_id INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE koersen ADD COLUMN sporza_match_id INTEGER",
+        "ALTER TABLE transfers ADD COLUMN seizoen_id INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE geplande_transfers ADD COLUMN seizoen_id INTEGER NOT NULL DEFAULT 1",
+    ]:
+        try:
+            conn.execute(_col_sql)
+            conn.commit()
+        except Exception:
+            pass  # Kolom bestaat al
+
+    # Vul sporza_match_id in voor bestaande koersen (seizoen 1 = Voorjaar Mannen 2026)
+    _sporza_match_ids = {
+        'Omloop Het Nieuwsblad':    3305179,
+        'Kuurne-Brussel-Kuurne':    3305413,
+        'Samyn Classic':            3305491,
+        'Strade Bianche':           3305174,
+        'Nokere Koerse':            3305415,
+        'Bredene Koksijde Classic': 3305417,
+        'Milaan-Sanremo':           3305369,
+        'Ronde van Brugge':         3305186,
+        'E3 Saxo Classic':          3305198,
+        'In Flanders Fields':       3305178,
+        'Dwars door Vlaanderen':    3305169,
+        'Ronde van Vlaanderen':     3305200,
+        'Scheldeprijs':             3305403,
+        'Parijs-Roubaix':           3305168,
+        'Ronde van Limburg':        3305492,
+        'Brabantse Pijl':           3305418,
+        'Amstel Gold Race':         3305192,
+        'Waalse Pijl':              3305188,
+        'Luik-Bastenaken-Luik':     3305197,
+    }
+    for _naam, _mid in _sporza_match_ids.items():
+        conn.execute(
+            "UPDATE koersen SET sporza_match_id=? WHERE naam=? AND (sporza_match_id IS NULL OR sporza_match_id=0)",
+            (_mid, _naam)
+        )
+    conn.commit()
+
+    # ── Multi-seizoen: mijn_ploeg recreëren met UNIQUE(renner_id, user_id, seizoen_id) ──
+    _ploeg_cols2 = {row[1] for row in conn.execute("PRAGMA table_info(mijn_ploeg)").fetchall()}
+    if 'seizoen_id' not in _ploeg_cols2:
+        conn.execute("ALTER TABLE mijn_ploeg RENAME TO mijn_ploeg_old2")
+        conn.execute("""
+            CREATE TABLE mijn_ploeg (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                renner_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL DEFAULT 1,
+                seizoen_id INTEGER NOT NULL DEFAULT 1,
+                positie TEXT DEFAULT 'bus' CHECK(positie IN ('starter','bus')),
+                is_kopman INTEGER DEFAULT 0,
+                aangeschaft_op TEXT DEFAULT (date('now')),
+                UNIQUE(renner_id, user_id, seizoen_id),
+                FOREIGN KEY (renner_id) REFERENCES renners(id)
+            )
+        """)
+        conn.execute("""
+            INSERT INTO mijn_ploeg (id, renner_id, user_id, seizoen_id, positie, is_kopman, aangeschaft_op)
+            SELECT id, renner_id, user_id, 1, positie, is_kopman, aangeschaft_op FROM mijn_ploeg_old2
+        """)
+        conn.execute("DROP TABLE mijn_ploeg_old2")
+        conn.commit()
+
     # Migratie: historiek_renner tabel (uitslagen vorig seizoen, display-only)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS historiek_renner (
@@ -353,11 +440,17 @@ def transfer_kosten(transfer_nummer, gratis=3):
     return transfer_nummer - gratis
 
 
-def seed_renners():
-    conn = get_db()
-    count = conn.execute("SELECT COUNT(*) FROM renners").fetchone()[0]
+def seed_renners(conn=None, seizoen_id=1):
+    """Seed de standaard renners voor een gegeven seizoen (alleen als nog leeg)."""
+    _own_conn = conn is None
+    if _own_conn:
+        conn = get_db()
+    count = conn.execute(
+        "SELECT COUNT(*) FROM renners WHERE seizoen_id=?", (seizoen_id,)
+    ).fetchone()[0]
     if count > 0:
-        conn.close()
+        if _own_conn:
+            conn.close()
         return
 
     renners = [
@@ -405,18 +498,25 @@ def seed_renners():
     ]
 
     conn.executemany(
-        "INSERT INTO renners (naam, ploeg, rol, prijs) VALUES (?,?,?,?)",
-        renners
+        "INSERT INTO renners (naam, ploeg, rol, prijs, seizoen_id) VALUES (?,?,?,?,?)",
+        [(r[0], r[1], r[2], r[3], seizoen_id) for r in renners]
     )
     conn.commit()
-    conn.close()
-
-
-def seed_koersen():
-    conn = get_db()
-    count = conn.execute("SELECT COUNT(*) FROM koersen").fetchone()[0]
-    if count > 0:
+    if _own_conn:
         conn.close()
+
+
+def seed_koersen(conn=None, seizoen_id=1):
+    """Seed de standaard koersen voor een gegeven seizoen (alleen als nog leeg)."""
+    _own_conn = conn is None
+    if _own_conn:
+        conn = get_db()
+    count = conn.execute(
+        "SELECT COUNT(*) FROM koersen WHERE seizoen_id=?", (seizoen_id,)
+    ).fetchone()[0]
+    if count > 0:
+        if _own_conn:
+            conn.close()
         return
 
     # Echte Sporza Wielermanager Voorjaar 2026 kalender (19 koersen)
@@ -444,8 +544,9 @@ def seed_koersen():
     ]
 
     conn.executemany(
-        "INSERT INTO koersen (naam, datum, soort, afgelopen) VALUES (?,?,?,?)",
-        koersen
+        "INSERT INTO koersen (naam, datum, soort, afgelopen, seizoen_id) VALUES (?,?,?,?,?)",
+        [(k[0], k[1], k[2], k[3], seizoen_id) for k in koersen]
     )
     conn.commit()
-    conn.close()
+    if _own_conn:
+        conn.close()

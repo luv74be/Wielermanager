@@ -21,7 +21,9 @@ const state = {
   chatMessages: [],   // [{role:'user'|'assistant', content:'...', transfer_suggestion?:{...}}]
   chatLoading: false,
   // Auth
-  currentUser: null,  // {user_id, username, is_admin}
+  currentUser: null,  // {user_id, username, is_admin, seizoen_id, seizoen_naam}
+  // Seizoenen
+  seizoenen: [],       // [{id, naam, sporza_edition}]
 };
 
 // ── API helpers ──────────────────────────────────────────────────────────────
@@ -73,6 +75,7 @@ const PAGE_LABELS = {
   'mini-competitie':    'Minicompetitie',
   instellingen:         'Instellingen',
   'admin-gebruikers':   'Gebruikers',
+  'admin-seizoenen':    'Seizoenen',
 };
 
 function getPageLabel(page) {
@@ -177,12 +180,19 @@ function renderBreadcrumb() {
 document.getElementById('hamburger').addEventListener('click', () => {
   document.getElementById('sidebar').classList.toggle('open');
 });
+document.getElementById('sidebar-seizoen')?.addEventListener('click', e => {
+  e.stopPropagation();
+  _openSeizoenDropdown();
+});
 
-// ── Sidebar user display ──────────────────────────────────────────────────────
+// ── Sidebar user display + seizoen-switcher ───────────────────────────────────
 function updateSidebarUser() {
   const user = state.currentUser;
   const el = document.getElementById('sidebar-user');
   const adminEl = document.getElementById('nav-admin');
+  const seizoenenEl = document.getElementById('nav-seizoenen');
+  const seizoenBox = document.getElementById('sidebar-seizoen');
+  const seizoenNaamEl = document.getElementById('seizoen-naam');
   if (!el) return;
 
   if (user && user.username) {
@@ -192,10 +202,64 @@ function updateSidebarUser() {
       <br/><a href="/logout">Uitloggen</a>
     `;
     if (adminEl) adminEl.style.display = user.is_admin ? '' : 'none';
+    if (seizoenenEl) seizoenenEl.style.display = user.is_admin ? '' : 'none';
   } else {
     el.innerHTML = '';
     if (adminEl) adminEl.style.display = 'none';
+    if (seizoenenEl) seizoenenEl.style.display = 'none';
   }
+
+  // Seizoen-switcher vullen
+  if (seizoenBox && seizoenNaamEl) {
+    const currentNaam = user?.seizoen_naam || state.instellingen?.competitie || '…';
+    seizoenNaamEl.textContent = currentNaam;
+    if (state.seizoenen && state.seizoenen.length > 0) {
+      seizoenBox.style.display = 'flex';
+    } else {
+      seizoenBox.style.display = 'none';
+    }
+  }
+}
+
+function _openSeizoenDropdown() {
+  // Sluit bestaande dropdown als die open is
+  const existing = document.querySelector('.seizoen-dropdown');
+  if (existing) { existing.remove(); return; }
+
+  const seizoenBox = document.getElementById('sidebar-seizoen');
+  if (!seizoenBox) return;
+
+  const currentId = state.currentUser?.seizoen_id;
+  const dropdown = document.createElement('div');
+  dropdown.className = 'seizoen-dropdown';
+  dropdown.innerHTML = state.seizoenen.map(s => `
+    <div class="seizoen-dropdown-item ${s.id === currentId ? 'active' : ''}"
+         onclick="_switchSeizoen(${s.id})">
+      ${s.id === currentId ? '✓ ' : ''}${s.naam}
+    </div>
+  `).join('');
+
+  seizoenBox.appendChild(dropdown);
+
+  // Sluit bij klik buiten
+  setTimeout(() => {
+    document.addEventListener('click', function _close(e) {
+      if (!seizoenBox.contains(e.target)) {
+        dropdown.remove();
+        document.removeEventListener('click', _close);
+      }
+    });
+  }, 0);
+}
+
+async function _switchSeizoen(sid) {
+  document.querySelector('.seizoen-dropdown')?.remove();
+  if (sid === state.currentUser?.seizoen_id) return;
+  try {
+    const res = await post('/api/switch-seizoen', { seizoen_id: sid });
+    toast(`Gewisseld naar ${res.seizoen_naam}`, 'success');
+    await refreshAll();
+  } catch(e) { toast('Fout: ' + e.message, 'error'); }
 }
 
 // Sluit sidebar bij klik buiten het menu
@@ -236,7 +300,7 @@ function sortTable(arr, key, dir) {
 
 // ── Load data ────────────────────────────────────────────────────────────────
 async function loadAll() {
-  const [renners, ploeg, koersen, stats, inst, gepland, transfers, me] = await Promise.all([
+  const [renners, ploeg, koersen, stats, inst, gepland, transfers, me, seizoenen] = await Promise.all([
     get('/api/renners'),
     get('/api/mijn-ploeg'),
     get('/api/koersen'),
@@ -245,6 +309,7 @@ async function loadAll() {
     get('/api/geplande-transfers'),
     get('/api/transfers'),
     get('/api/me').catch(() => null),
+    get('/api/seizoenen').catch(() => []),
   ]);
   state.renners          = renners;
   state.ploeg            = ploeg;
@@ -254,6 +319,7 @@ async function loadAll() {
   state.geplandTransfers = gepland;
   state.transfers        = transfers;
   state.currentUser      = me;
+  state.seizoenen        = seizoenen || [];
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -4243,6 +4309,128 @@ async function renderAdminGebruikers() {
   `;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// PAGE: Admin – Seizoenbeheer
+// ═══════════════════════════════════════════════════════════════════════════
+async function renderAdminSeizoen() {
+  if (!state.currentUser?.is_admin) return `<div class="card"><p>Geen toegang.</p></div>`;
+
+  let seizoenen = [];
+  try { seizoenen = await get('/api/admin/seizoenen'); } catch(e) { return `<div class="card"><p>Fout: ${e.message}</p></div>`; }
+
+  const currentId = state.currentUser?.seizoen_id;
+  const rows = seizoenen.map(s => `
+    <tr>
+      <td style="width:32px;color:var(--muted)">${s.id}</td>
+      <td>
+        <strong>${s.naam}</strong>
+        ${s.id === currentId ? '<span style="font-size:0.7rem;color:var(--accent);margin-left:6px">● actief</span>' : ''}
+      </td>
+      <td style="font-family:monospace;font-size:0.82rem">${s.sporza_edition || '—'}</td>
+      <td>${s.actief ? '<span class="badge badge-worldtour">Actief</span>' : '<span class="badge badge-niet_wt">Inactief</span>'}</td>
+      <td style="white-space:nowrap">
+        <button class="btn btn-secondary btn-sm" onclick="adminSeedSeizoen(${s.id},'${s.naam}')">🌱 Seed</button>
+        <button class="btn btn-secondary btn-sm" style="margin-left:4px" onclick="adminEditSeizoen(${s.id},'${s.naam}','${s.sporza_edition}',${s.actief})">✏️</button>
+        ${s.id !== 1
+          ? `<button class="btn btn-sm" style="margin-left:4px;background:rgba(239,68,68,.15);color:#ef4444;border:1px solid rgba(239,68,68,.3)" onclick="adminDeleteSeizoen(${s.id},'${s.naam}')">✕</button>`
+          : ''}
+      </td>
+    </tr>
+  `).join('');
+
+  return `
+    <h2 style="margin-bottom:20px">🗂️ Seizoenbeheer</h2>
+
+    <div class="card" style="margin-bottom:20px">
+      <h3 style="margin:0 0 16px">Seizoenen (${seizoenen.length})</h3>
+      <p style="color:var(--muted);font-size:0.85rem;margin:0 0 14px">
+        Elk seizoen heeft eigen renners, wedstrijden, ploegen en budget per gebruiker.
+        Gebruik "🌱 Seed" om de standaard renners &amp; wedstrijden te laden voor een nieuw seizoen.
+      </p>
+      <div style="overflow-x:auto">
+        <table class="table">
+          <thead><tr><th>#</th><th>Naam</th><th>Sporza Edition ID</th><th>Status</th><th>Acties</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin:0 0 16px">➕ Nieuw seizoen aanmaken</h3>
+      <p style="color:var(--muted);font-size:0.82rem;margin:0 0 12px">
+        De Sporza Edition ID vind je in de URL van wielermanager.sporza.be, bv. <code>vrjr-m-26</code> voor Voorjaar Mannen 2026.
+      </p>
+      <form id="admin-add-seizoen-form">
+        <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end">
+          <div>
+            <label class="form-label">Naam</label>
+            <input class="form-input" name="naam" placeholder="bv. Voorjaar Vrouwen 2026" required autocomplete="off" style="width:220px" />
+          </div>
+          <div>
+            <label class="form-label">Sporza Edition ID</label>
+            <input class="form-input" name="sporza_edition" placeholder="bv. vrjr-v-26" autocomplete="off" style="width:160px" />
+          </div>
+          <button type="submit" class="btn btn-primary">Aanmaken</button>
+        </div>
+      </form>
+    </div>
+  `;
+}
+
+async function adminSeedSeizoen(sid, naam) {
+  if (!confirm(`Standaard renners & wedstrijden laden voor "${naam}"?\n(Wordt overgeslagen als al data aanwezig is.)`)) return;
+  try {
+    const res = await post(`/api/admin/seizoenen/${sid}/seed`, {});
+    toast(`${naam} geseeded: ${res.renners} renners, ${res.koersen} wedstrijden ✅`, 'success');
+    await refreshAll();
+  } catch(e) { toast('Fout: ' + e.message, 'error'); }
+}
+
+async function adminDeleteSeizoen(sid, naam) {
+  if (!confirm(`Seizoen "${naam}" verwijderen (inclusief alle renners en wedstrijden)?\nPloegen van gebruikers blijven veilig.`)) return;
+  try {
+    await del(`/api/admin/seizoenen/${sid}`);
+    toast(`${naam} verwijderd`, 'success');
+    await refreshAll();
+    await renderPage();
+  } catch(e) { toast('Fout: ' + e.message, 'error'); }
+}
+
+function adminEditSeizoen(sid, naam, edition, actief) {
+  openModal(`
+    <h3 style="margin:0 0 16px">✏️ Seizoen bewerken</h3>
+    <form id="edit-seizoen-form">
+      <label class="form-label">Naam</label>
+      <input class="form-input" name="naam" value="${naam}" required style="width:100%;margin-bottom:10px" />
+      <label class="form-label">Sporza Edition ID</label>
+      <input class="form-input" name="sporza_edition" value="${edition}" style="width:100%;margin-bottom:10px" />
+      <label class="form-label" style="display:flex;align-items:center;gap:8px;cursor:pointer">
+        <input type="checkbox" name="actief" value="1" ${actief ? 'checked' : ''} />
+        Actief (zichtbaar voor gebruikers)
+      </label>
+      <div style="margin-top:16px;display:flex;gap:10px">
+        <button type="submit" class="btn btn-primary">Opslaan</button>
+        <button type="button" class="btn btn-secondary" onclick="closeModal()">Annuleren</button>
+      </div>
+    </form>
+  `);
+  document.getElementById('edit-seizoen-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    try {
+      await put(`/api/admin/seizoenen/${sid}`, {
+        naam: fd.get('naam').trim(),
+        sporza_edition: fd.get('sporza_edition').trim(),
+        actief: fd.get('actief') === '1' ? 1 : 0,
+      });
+      toast('Seizoen bijgewerkt ✅', 'success');
+      closeModal();
+      await refreshAll();
+      await renderPage();
+    } catch(err) { toast('Fout: ' + err.message, 'error'); }
+  });
+}
+
 async function adminResetPassword(uid, username) {
   const newPw = prompt(`Nieuw wachtwoord voor "${username}":`);
   if (!newPw || !newPw.trim()) return;
@@ -4281,6 +4469,7 @@ async function renderPage() {
       case 'mini-competitie':  html = await renderMiniCompetitie(); break;
       case 'instellingen':       html = await renderInstellingen(); break;
       case 'admin-gebruikers':  html = await renderAdminGebruikers(); break;
+      case 'admin-seizoenen':   html = await renderAdminSeizoen(); break;
       default: html = renderDashboard();
     }
     app.innerHTML = renderBreadcrumb() + html;
@@ -4318,6 +4507,24 @@ async function renderPage() {
             toast('API-sleutel opgeslagen ✅', 'success');
             renderPage();
           } catch(err) { toast(err.message, 'error'); }
+        });
+      }
+    }
+    if (state.page === 'admin-seizoenen') {
+      const addSeizoenForm = document.getElementById('admin-add-seizoen-form');
+      if (addSeizoenForm) {
+        addSeizoenForm.addEventListener('submit', async e => {
+          e.preventDefault();
+          const fd = new FormData(e.target);
+          try {
+            const res = await post('/api/admin/seizoenen', {
+              naam: fd.get('naam').trim(),
+              sporza_edition: fd.get('sporza_edition').trim(),
+            });
+            toast(`Seizoen aangemaakt ✅ (id=${res.id})`, 'success');
+            await refreshAll();
+            await renderPage();
+          } catch(err) { toast('Fout: ' + err.message, 'error'); }
         });
       }
     }

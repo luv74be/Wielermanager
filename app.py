@@ -45,31 +45,17 @@ PCS_SLUGS = {
     'Luik-Bastenaken-Luik':     'liege-bastogne-liege',
 }
 
-# ── Sporza Wielermanager match ID mapping ──────────────────────────────────────
-SPORZA_MATCH_IDS = {
-    'Omloop Het Nieuwsblad':    3305179,
-    'Kuurne-Brussel-Kuurne':    3305413,
-    'Samyn Classic':            3305491,
-    'Strade Bianche':           3305174,
-    'Nokere Koerse':            3305415,
-    'Bredene Koksijde Classic': 3305417,
-    'Milaan-Sanremo':           3305369,
-    'Ronde van Brugge':         3305186,
-    'E3 Saxo Classic':          3305198,
-    'In Flanders Fields':       3305178,
-    'Dwars door Vlaanderen':    3305169,
-    'Ronde van Vlaanderen':     3305200,
-    'Scheldeprijs':             3305403,
-    'Parijs-Roubaix':           3305168,
-    'Ronde van Limburg':        3305492,
-    'Brabantse Pijl':           3305418,
-    'Amstel Gold Race':         3305192,
-    'Waalse Pijl':              3305188,
-    'Luik-Bastenaken-Luik':     3305197,
-}
-
 SPORZA_BASE = 'https://wielermanager.sporza.be'
-SPORZA_EDITION = 'vrjr-m-26'
+
+
+def _get_sporza_edition(conn, sid=None):
+    """Haal de Sporza edition-ID op voor een seizoen (dynamisch uit DB)."""
+    if sid is None:
+        sid = current_seizoen_id(conn)
+    row = conn.execute(
+        "SELECT sporza_edition FROM seizoenen WHERE id=?", (sid,)
+    ).fetchone()
+    return row['sporza_edition'] if row else 'vrjr-m-26'
 
 
 def _find_wm_match_id(data_text, gracenote_id):
@@ -316,6 +302,23 @@ def current_user_id():
         return 1
     return None
 
+def current_seizoen_id(conn=None):
+    """Geeft de seizoen_id voor de huidige sessie. Fallback: eerste actieve seizoen."""
+    sid = session.get('seizoen_id')
+    if sid:
+        return sid
+    # Fallback: eerste actieve seizoen uit DB
+    _own = conn is None
+    c = conn if conn else get_db()
+    try:
+        row = c.execute(
+            "SELECT id FROM seizoenen WHERE actief=1 ORDER BY id LIMIT 1"
+        ).fetchone()
+        return row['id'] if row else 1
+    finally:
+        if _own:
+            c.close()
+
 def _check_auth():
     """Geeft True als auth uitgeschakeld is (geen APP_PASSWORD) of gebruiker ingelogd is."""
     return current_user_id() is not None
@@ -420,14 +423,23 @@ def logout():
 
 @app.route('/api/me')
 def api_me():
-    """Geeft de ingelogde gebruiker terug."""
+    """Geeft de ingelogde gebruiker + huidig seizoen terug."""
     uid = current_user_id()
     if not uid:
         return jsonify({'error': 'Niet ingelogd'}), 401
+    conn = get_db()
+    sid = current_seizoen_id(conn)
+    sz = conn.execute(
+        "SELECT id, naam, sporza_edition FROM seizoenen WHERE id=?", (sid,)
+    ).fetchone()
+    conn.close()
     return jsonify({
         'user_id': uid,
         'username': session.get('username', 'admin'),
         'is_admin': session.get('is_admin', False),
+        'seizoen_id': sid,
+        'seizoen_naam': sz['naam'] if sz else 'Onbekend',
+        'sporza_edition': sz['sporza_edition'] if sz else 'vrjr-m-26',
     })
 
 
@@ -515,6 +527,123 @@ def admin_delete_user(uid):
     conn.commit()
     conn.close()
     return jsonify({'ok': True})
+
+
+# ── API: Seizoenbeheer ──────────────────────────────────────────────────────────
+
+@app.route('/api/seizoenen', methods=['GET'])
+def get_seizoenen():
+    """Lijst van actieve seizoenen (voor alle gebruikers)."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id, naam, sporza_edition, actief FROM seizoenen WHERE actief=1 ORDER BY id"
+    ).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route('/api/switch-seizoen', methods=['POST'])
+def switch_seizoen():
+    """Wissel het actieve seizoen voor de huidige sessie."""
+    d = request.json or {}
+    sid = d.get('seizoen_id')
+    if not sid:
+        return jsonify({'error': 'seizoen_id is verplicht'}), 400
+    conn = get_db()
+    sz = conn.execute(
+        "SELECT id, naam, sporza_edition FROM seizoenen WHERE id=? AND actief=1", (sid,)
+    ).fetchone()
+    conn.close()
+    if not sz:
+        return jsonify({'error': 'Seizoen niet gevonden of niet actief'}), 404
+    session['seizoen_id'] = sz['id']
+    return jsonify({'ok': True, 'seizoen_id': sz['id'], 'seizoen_naam': sz['naam']})
+
+
+@app.route('/api/admin/seizoenen', methods=['GET'])
+def admin_list_seizoenen():
+    err, code = _require_admin()
+    if err: return err, code
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM seizoenen ORDER BY id").fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route('/api/admin/seizoenen', methods=['POST'])
+def admin_create_seizoen():
+    err, code = _require_admin()
+    if err: return err, code
+    d = request.json or {}
+    naam = (d.get('naam') or '').strip()
+    edition = (d.get('sporza_edition') or '').strip()
+    if not naam:
+        return jsonify({'error': 'naam is verplicht'}), 400
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO seizoenen (naam, sporza_edition, actief) VALUES (?,?,1)",
+        (naam, edition or 'onbekend')
+    )
+    conn.commit()
+    new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.close()
+    return jsonify({'ok': True, 'id': new_id}), 201
+
+
+@app.route('/api/admin/seizoenen/<int:sid>', methods=['PUT'])
+def admin_update_seizoen(sid):
+    err, code = _require_admin()
+    if err: return err, code
+    d = request.json or {}
+    conn = get_db()
+    if 'naam' in d and d['naam']:
+        conn.execute("UPDATE seizoenen SET naam=? WHERE id=?", (d['naam'].strip(), sid))
+    if 'sporza_edition' in d:
+        conn.execute("UPDATE seizoenen SET sporza_edition=? WHERE id=?", (d['sporza_edition'].strip(), sid))
+    if 'actief' in d:
+        conn.execute("UPDATE seizoenen SET actief=? WHERE id=?", (int(bool(d['actief'])), sid))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/admin/seizoenen/<int:sid>', methods=['DELETE'])
+def admin_delete_seizoen(sid):
+    err, code = _require_admin()
+    if err: return err, code
+    conn = get_db()
+    # Controleer of er al data aan hangt
+    has_data = conn.execute(
+        "SELECT 1 FROM mijn_ploeg WHERE seizoen_id=? LIMIT 1", (sid,)
+    ).fetchone()
+    if has_data:
+        conn.close()
+        return jsonify({'error': 'Kan seizoen niet verwijderen: er zijn al ploegen aangemaakt'}), 409
+    conn.execute("DELETE FROM seizoenen WHERE id=?", (sid,))
+    conn.execute("DELETE FROM renners WHERE seizoen_id=?", (sid,))
+    conn.execute("DELETE FROM koersen WHERE seizoen_id=?", (sid,))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/admin/seizoenen/<int:sid>/seed', methods=['POST'])
+def admin_seed_seizoen(sid):
+    """Seed standaard renners & koersen voor een seizoen (alleen als nog leeg)."""
+    err, code = _require_admin()
+    if err: return err, code
+    conn = get_db()
+    sz = conn.execute("SELECT * FROM seizoenen WHERE id=?", (sid,)).fetchone()
+    if not sz:
+        conn.close()
+        return jsonify({'error': 'Seizoen niet gevonden'}), 404
+    seed_renners(conn, sid)
+    seed_koersen(conn, sid)
+    r_count = conn.execute("SELECT COUNT(*) FROM renners WHERE seizoen_id=?", (sid,)).fetchone()[0]
+    k_count = conn.execute("SELECT COUNT(*) FROM koersen WHERE seizoen_id=?", (sid,)).fetchone()[0]
+    conn.close()
+    return jsonify({'ok': True, 'renners': r_count, 'koersen': k_count})
+
 
 @app.route('/sw.js')
 def service_worker():
@@ -628,8 +757,10 @@ def server_info():
 
 @app.route("/api/instellingen")
 def get_instellingen():
+    uid = current_user_id()
     conn = get_db()
-    result = _get_inst(conn)
+    sid = current_seizoen_id(conn)
+    result = _get_inst(conn, uid, sid=sid)
     conn.close()
     return jsonify(result)
 
@@ -637,10 +768,12 @@ def get_instellingen():
 @app.route("/api/instellingen", methods=["PUT"])
 def update_instellingen():
     data = request.json
+    uid = current_user_id()
     conn = get_db()
+    sid = current_seizoen_id(conn)
     for k, v in data.items():
         if k in _USER_INST_KEYS:
-            _set_user_inst_val(conn, k, v)
+            _set_user_inst_val(conn, k, v, uid=uid, sid=sid)
         else:
             conn.execute(
                 "INSERT OR REPLACE INTO instellingen (sleutel, waarde) VALUES (?,?)",
@@ -669,13 +802,15 @@ def opzoeken_renner():
 
     # Cookie is optioneel — endpoint /api/{edition}/cyclists is publiek toegankelijk
     conn = get_db()
-    cookie_at = _get_sporza_at(conn)
+    sid = current_seizoen_id(conn)
+    edition = _get_sporza_edition(conn, sid)
+    cookie_at = _get_sporza_at(conn, sid=sid)
     conn.close()
     headers = {}
     if cookie_at:
         headers = {"Cookie": f"sporza-site_profile_at={cookie_at}"}
 
-    url = f"{SPORZA_BASE}/api/{SPORZA_EDITION}/cyclists"
+    url = f"{SPORZA_BASE}/api/{edition}/cyclists"
     try:
         scraper = cloudscraper.create_scraper()
         resp = scraper.get(url, headers=headers, timeout=20)
@@ -750,9 +885,13 @@ def update_renner_volledig(rid):
     # ── 2. Ploeg + prijs via Sporza cyclists API ──────────────────────────────
     nieuwe_ploeg = oud_ploeg
     nieuwe_prijs = oud_prijs
+    _conn2 = get_db()
+    _sid2 = current_seizoen_id(_conn2)
+    _edition2 = _get_sporza_edition(_conn2, _sid2)
+    _conn2.close()
     try:
         cyl_resp = scraper.get(
-            f"https://wielermanager.sporza.be/api/{SPORZA_EDITION}/cyclists", timeout=20
+            f"https://wielermanager.sporza.be/api/{_edition2}/cyclists", timeout=20
         )
         if cyl_resp.status_code == 200:
             for c in cyl_resp.json().get("cyclists", []):
@@ -1047,14 +1186,15 @@ def laad_renner_historiek(rid):
 def get_renners():
     uid = current_user_id()
     conn = get_db()
+    sid = current_seizoen_id(conn)
     renners = conn.execute("""
         SELECT r.*,
                CASE WHEN m.renner_id IS NOT NULL THEN 1 ELSE 0 END as in_ploeg
         FROM renners r
-        LEFT JOIN mijn_ploeg m ON r.id = m.renner_id AND m.user_id = ?
-        WHERE r.actief = 1
+        LEFT JOIN mijn_ploeg m ON r.id = m.renner_id AND m.user_id = ? AND m.seizoen_id = ?
+        WHERE r.actief = 1 AND r.seizoen_id = ?
         ORDER BY r.totaal_punten DESC, r.prijs DESC
-    """, (uid,)).fetchall()
+    """, (uid, sid, sid)).fetchall()
     conn.close()
     return jsonify([dict(r) for r in renners])
 
@@ -1147,8 +1287,9 @@ def get_renner_detail(rid):
         return jsonify({"error": "Renner niet gevonden"}), 404
 
     uid = current_user_id()
+    sid = current_seizoen_id(conn)
     in_ploeg = conn.execute(
-        "SELECT 1 FROM mijn_ploeg WHERE renner_id=? AND user_id=?", (rid, uid)
+        "SELECT 1 FROM mijn_ploeg WHERE renner_id=? AND user_id=? AND seizoen_id=?", (rid, uid, sid)
     ).fetchone()
 
     # Wedstrijden waar renner in opstelling of resultaten staat
@@ -1349,7 +1490,8 @@ def toggle_geblesseerd(rid):
 def get_mijn_ploeg():
     uid = current_user_id()
     conn = get_db()
-    inst = _get_inst(conn)
+    sid = current_seizoen_id(conn)
+    inst = _get_inst(conn, uid, sid=sid)
     budget = float(inst.get("budget", 120))
 
     ploeg = conn.execute("""
@@ -1357,9 +1499,9 @@ def get_mijn_ploeg():
                r.foto, r.geblesseerd, m.aangeschaft_op
         FROM mijn_ploeg m
         JOIN renners r ON r.id = m.renner_id
-        WHERE m.user_id = ?
+        WHERE m.user_id = ? AND m.seizoen_id = ?
         ORDER BY r.prijs DESC, r.totaal_punten DESC
-    """, (uid,)).fetchall()
+    """, (uid, sid)).fetchall()
 
     uitgegeven = sum(r["prijs"] for r in ploeg)
     resterend = round(budget - uitgegeven, 2)
@@ -1374,52 +1516,51 @@ def get_mijn_ploeg():
     })
 
 
-def _get_user_inst_val(conn, key, uid=None, default=None):
+def _get_user_inst_val(conn, key, uid=None, default=None, sid=None):
     """Haal een user-specifieke instellingen waarde op (met fallback naar ongesuffixte key)."""
-    if uid is None:
-        uid = current_user_id() or 1
-    row = conn.execute("SELECT waarde FROM instellingen WHERE sleutel=?", (f"{key}_{uid}",)).fetchone()
-    if row:
-        return row['waarde']
-    row = conn.execute("SELECT waarde FROM instellingen WHERE sleutel=?", (key,)).fetchone()
-    return row['waarde'] if row else default
+    if uid is None: uid = current_user_id() or 1
+    if sid is None: sid = current_seizoen_id(conn)
+    # Try {key}_{uid}_{sid} first, then {key}_{uid}, then {key}
+    for sleutel in [f'{key}_{uid}_{sid}', f'{key}_{uid}', key]:
+        row = conn.execute("SELECT waarde FROM instellingen WHERE sleutel=?", (sleutel,)).fetchone()
+        if row:
+            return row['waarde']
+    return default
 
 
-def _set_user_inst_val(conn, key, val, uid=None):
-    """Sla een user-specifieke instellingen waarde op als {key}_{uid}."""
-    if uid is None:
-        uid = current_user_id() or 1
-    conn.execute(
-        "INSERT OR REPLACE INTO instellingen (sleutel, waarde) VALUES (?,?)",
-        (f"{key}_{uid}", str(val))
-    )
+def _set_user_inst_val(conn, key, val, uid=None, sid=None):
+    """Sla een user-specifieke instellingen waarde op als {key}_{uid}_{sid}."""
+    if uid is None: uid = current_user_id() or 1
+    if sid is None: sid = current_seizoen_id(conn)
+    sleutel = f'{key}_{uid}_{sid}'
+    conn.execute("INSERT OR REPLACE INTO instellingen (sleutel, waarde) VALUES (?,?)", (sleutel, str(val)))
 
 
-def _get_inst(conn, uid=None):
+def _get_inst(conn, uid=None, sid=None):
     """Alle instellingen voor de huidige gebruiker (user-specifieke waarden overschrijven shared)."""
     if uid is None:
         uid = current_user_id() or 1
+    if sid is None:
+        sid = current_seizoen_id(conn)
     all_rows = {r['sleutel']: r['waarde'] for r in conn.execute("SELECT sleutel, waarde FROM instellingen").fetchall()}
     result = {}
     suffix = f"_{uid}"
+    sid_suffix = f"_{uid}_{sid}"
     for key, val in all_rows.items():
-        # Skip andere gebruikers' specifieke keys
+        # Skip keys that match pattern {base_key}_{anything} — handled separately via _get_user_inst_val
         skip = False
         for base_key in _USER_INST_KEYS:
-            if key.startswith(f"{base_key}_") and key != f"{base_key}{suffix}":
+            if key.startswith(f"{base_key}_"):
                 skip = True
                 break
         if skip:
             continue
-        # Map {base_key}_{uid} → base_key in result
-        mapped = False
-        for base_key in _USER_INST_KEYS:
-            if key == f"{base_key}{suffix}":
-                result[base_key] = val
-                mapped = True
-                break
-        if not mapped:
-            result[key] = val
+        result[key] = val
+    # Now overlay user-specific values using _get_user_inst_val (which handles sid fallback)
+    for k in _USER_INST_KEYS:
+        val = _get_user_inst_val(conn, k, uid, sid=sid)
+        if val is not None:
+            result[k] = val
     return result
 
 
@@ -1428,7 +1569,8 @@ def add_to_ploeg():
     uid = current_user_id()
     rid = request.json.get("renner_id")
     conn = get_db()
-    inst = _get_inst(conn)
+    sid = current_seizoen_id(conn)
+    inst = _get_inst(conn, uid, sid=sid)
 
     budget = float(inst.get("budget", 120))
     max_renners = int(inst.get("max_renners", 20))
@@ -1436,14 +1578,14 @@ def add_to_ploeg():
 
     ploeg = conn.execute("""
         SELECT r.prijs, r.ploeg FROM mijn_ploeg m JOIN renners r ON r.id=m.renner_id
-        WHERE m.user_id=?
-    """, (uid,)).fetchall()
+        WHERE m.user_id=? AND m.seizoen_id=?
+    """, (uid, sid)).fetchall()
 
     if len(ploeg) >= max_renners:
         conn.close()
         return jsonify({"error": f"Ploeg is al vol ({max_renners} renners)"}), 400
 
-    renner = conn.execute("SELECT * FROM renners WHERE id=?", (rid,)).fetchone()
+    renner = conn.execute("SELECT * FROM renners WHERE id=? AND seizoen_id=?", (rid, sid)).fetchone()
     if not renner:
         conn.close()
         return jsonify({"error": "Renner niet gevonden"}), 404
@@ -1459,7 +1601,7 @@ def add_to_ploeg():
         return jsonify({"error": f"Onvoldoende budget (€{budget - uitgegeven:.1f}M beschikbaar)"}), 400
 
     try:
-        conn.execute("INSERT INTO mijn_ploeg (renner_id, user_id) VALUES (?,?)", (rid, uid))
+        conn.execute("INSERT INTO mijn_ploeg (renner_id, user_id, seizoen_id) VALUES (?,?,?)", (rid, uid, sid))
         conn.commit()
     except Exception:
         conn.close()
@@ -1474,7 +1616,8 @@ def remove_from_ploeg():
     uid = current_user_id()
     rid = request.json.get("renner_id")
     conn = get_db()
-    conn.execute("DELETE FROM mijn_ploeg WHERE renner_id=? AND user_id=?", (rid, uid))
+    sid = current_seizoen_id(conn)
+    conn.execute("DELETE FROM mijn_ploeg WHERE renner_id=? AND user_id=? AND seizoen_id=?", (rid, uid, sid))
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
@@ -1486,15 +1629,16 @@ def remove_from_ploeg():
 def get_transfer_kosten():
     uid = current_user_id()
     conn = get_db()
-    inst = _get_inst(conn)
+    sid = current_seizoen_id(conn)
+    inst = _get_inst(conn, uid, sid=sid)
     count = int(inst.get("transfer_count", 0))
     gratis = int(inst.get("transfers_gratis", 3))
     volgende = count + 1
     kosten = transfer_kosten(volgende, gratis)
     budget_rest = float(inst.get("budget", 120))
     ploeg = conn.execute(
-        "SELECT r.prijs FROM mijn_ploeg m JOIN renners r ON r.id=m.renner_id WHERE m.user_id=?",
-        (uid,)
+        "SELECT r.prijs FROM mijn_ploeg m JOIN renners r ON r.id=m.renner_id WHERE m.user_id=? AND m.seizoen_id=?",
+        (uid, sid)
     ).fetchall()
     uitgegeven = sum(r["prijs"] for r in ploeg)
     budget_rest = round(budget_rest - uitgegeven, 2)
@@ -1515,7 +1659,8 @@ def do_transfer():
     rid_in  = d.get("renner_in_id")
 
     conn = get_db()
-    inst = _get_inst(conn)
+    sid = current_seizoen_id(conn)
+    inst = _get_inst(conn, uid, sid=sid)
     budget = float(inst.get("budget", 120))
     count = int(inst.get("transfer_count", 0))
     gratis = int(inst.get("transfers_gratis", 3))
@@ -1524,8 +1669,8 @@ def do_transfer():
     kosten = transfer_kosten(volgende, gratis)
 
     ploeg_rest = conn.execute(
-        "SELECT r.prijs, r.ploeg FROM mijn_ploeg m JOIN renners r ON r.id=m.renner_id WHERE m.user_id=? AND m.renner_id!=?",
-        (uid, rid_uit)
+        "SELECT r.prijs, r.ploeg FROM mijn_ploeg m JOIN renners r ON r.id=m.renner_id WHERE m.user_id=? AND m.seizoen_id=? AND m.renner_id!=?",
+        (uid, sid, rid_uit)
     ).fetchall()
 
     renner_in = conn.execute("SELECT * FROM renners WHERE id=?", (rid_in,)).fetchone()
@@ -1545,15 +1690,15 @@ def do_transfer():
         conn.close()
         return jsonify({"error": f"Onvoldoende budget (transfer kost €{kosten}M + rennerprijs €{renner_in['prijs']}M)"}), 400
 
-    conn.execute("DELETE FROM mijn_ploeg WHERE renner_id=? AND user_id=?", (rid_uit, uid))
-    conn.execute("INSERT OR REPLACE INTO mijn_ploeg (renner_id, user_id) VALUES (?,?)", (rid_in, uid))
+    conn.execute("DELETE FROM mijn_ploeg WHERE renner_id=? AND user_id=? AND seizoen_id=?", (rid_uit, uid, sid))
+    conn.execute("INSERT OR REPLACE INTO mijn_ploeg (renner_id, user_id, seizoen_id) VALUES (?,?,?)", (rid_in, uid, sid))
     conn.execute(
-        "INSERT INTO transfers (renner_uit_id, renner_in_id, kosten, user_id) VALUES (?,?,?,?)",
-        (rid_uit, rid_in, kosten, uid)
+        "INSERT INTO transfers (renner_uit_id, renner_in_id, kosten, user_id, seizoen_id) VALUES (?,?,?,?,?)",
+        (rid_uit, rid_in, kosten, uid, sid)
     )
     new_budget = round(budget - kosten, 2)
-    _set_user_inst_val(conn, 'transfer_count', str(volgende))
-    _set_user_inst_val(conn, 'budget', str(new_budget))
+    _set_user_inst_val(conn, 'transfer_count', str(volgende), uid=uid, sid=sid)
+    _set_user_inst_val(conn, 'budget', str(new_budget), uid=uid, sid=sid)
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "kosten": kosten, "nieuw_budget": new_budget})
@@ -1563,6 +1708,7 @@ def do_transfer():
 def get_transfers():
     uid = current_user_id()
     conn = get_db()
+    sid = current_seizoen_id(conn)
     transfers = conn.execute("""
         SELECT t.id, t.datum, t.kosten,
                ri.naam as renner_in,  ri.prijs as prijs_in,
@@ -1570,10 +1716,10 @@ def get_transfers():
         FROM transfers t
         LEFT JOIN renners ri ON ri.id = t.renner_in_id
         LEFT JOIN renners ru ON ru.id = t.renner_uit_id
-        WHERE t.user_id = ?
+        WHERE t.user_id = ? AND t.seizoen_id = ?
         ORDER BY t.datum DESC, t.id DESC
         LIMIT 50
-    """, (uid,)).fetchall()
+    """, (uid, sid)).fetchall()
     conn.close()
     return jsonify([dict(t) for t in transfers])
 
@@ -1584,6 +1730,7 @@ def get_transfers():
 def get_geplande_transfers():
     uid = current_user_id()
     conn = get_db()
+    sid = current_seizoen_id(conn)
     rows = conn.execute("""
         SELECT gt.id, gt.datum, gt.aangemaakt_op,
                r_uit.id as uit_id, r_uit.naam as uit_naam, r_uit.ploeg as uit_ploeg,
@@ -1593,9 +1740,9 @@ def get_geplande_transfers():
         FROM geplande_transfers gt
         JOIN renners r_uit ON r_uit.id = gt.renner_uit_id
         JOIN renners r_in  ON r_in.id  = gt.renner_in_id
-        WHERE gt.user_id = ?
+        WHERE gt.user_id = ? AND gt.seizoen_id = ?
         ORDER BY gt.datum ASC
-    """, (uid,)).fetchall()
+    """, (uid, sid)).fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
 
@@ -1610,9 +1757,10 @@ def add_gepland_transfer():
     if not all([renner_uit_id, renner_in_id, datum]):
         return jsonify({"error": "Ontbrekende velden"}), 400
     conn = get_db()
+    sid = current_seizoen_id(conn)
     conn.execute(
-        "INSERT INTO geplande_transfers (renner_uit_id, renner_in_id, datum, user_id) VALUES (?,?,?,?)",
-        (renner_uit_id, renner_in_id, datum, uid)
+        "INSERT INTO geplande_transfers (renner_uit_id, renner_in_id, datum, user_id, seizoen_id) VALUES (?,?,?,?,?)",
+        (renner_uit_id, renner_in_id, datum, uid, sid)
     )
     conn.commit()
     conn.close()
@@ -1623,7 +1771,8 @@ def add_gepland_transfer():
 def delete_gepland_transfer(gtid):
     uid = current_user_id()
     conn = get_db()
-    conn.execute("DELETE FROM geplande_transfers WHERE id=? AND user_id=?", (gtid, uid))
+    sid = current_seizoen_id(conn)
+    conn.execute("DELETE FROM geplande_transfers WHERE id=? AND user_id=? AND seizoen_id=?", (gtid, uid, sid))
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
@@ -1633,7 +1782,8 @@ def delete_gepland_transfer(gtid):
 def uitvoeren_gepland_transfer(gtid):
     uid = current_user_id()
     conn = get_db()
-    gt = conn.execute("SELECT * FROM geplande_transfers WHERE id=? AND user_id=?", (gtid, uid)).fetchone()
+    sid = current_seizoen_id(conn)
+    gt = conn.execute("SELECT * FROM geplande_transfers WHERE id=? AND user_id=? AND seizoen_id=?", (gtid, uid, sid)).fetchone()
     if not gt:
         conn.close()
         return jsonify({"error": "Geplande transfer niet gevonden"}), 404
@@ -1641,7 +1791,7 @@ def uitvoeren_gepland_transfer(gtid):
     rid_uit = gt["renner_uit_id"]
     rid_in  = gt["renner_in_id"]
 
-    inst = _get_inst(conn)
+    inst = _get_inst(conn, uid, sid=sid)
     budget = float(inst.get("budget", 120))
     count  = int(inst.get("transfer_count", 0))
     gratis = int(inst.get("transfers_gratis", 3))
@@ -1649,8 +1799,8 @@ def uitvoeren_gepland_transfer(gtid):
     kosten = transfer_kosten(volgende, gratis)
 
     ploeg_rest = conn.execute(
-        "SELECT r.prijs, r.ploeg FROM mijn_ploeg m JOIN renners r ON r.id=m.renner_id WHERE m.user_id=? AND m.renner_id!=?",
-        (uid, rid_uit)
+        "SELECT r.prijs, r.ploeg FROM mijn_ploeg m JOIN renners r ON r.id=m.renner_id WHERE m.user_id=? AND m.seizoen_id=? AND m.renner_id!=?",
+        (uid, sid, rid_uit)
     ).fetchall()
 
     renner_in = conn.execute("SELECT * FROM renners WHERE id=?", (rid_in,)).fetchone()
@@ -1658,7 +1808,7 @@ def uitvoeren_gepland_transfer(gtid):
         conn.close()
         return jsonify({"error": "Nieuw in te kopen renner niet gevonden"}), 404
 
-    in_ploeg = conn.execute("SELECT 1 FROM mijn_ploeg WHERE renner_id=? AND user_id=?", (rid_uit, uid)).fetchone()
+    in_ploeg = conn.execute("SELECT 1 FROM mijn_ploeg WHERE renner_id=? AND user_id=? AND seizoen_id=?", (rid_uit, uid, sid)).fetchone()
     if not in_ploeg:
         conn.close()
         return jsonify({"error": "Te vervangen renner zit niet meer in jouw ploeg"}), 400
@@ -1676,14 +1826,14 @@ def uitvoeren_gepland_transfer(gtid):
         return jsonify({"error": f"Onvoldoende budget (transfer kost €{kosten}M + rennerprijs €{renner_in['prijs']}M)"}), 400
 
     new_budget = round(budget - kosten, 2)
-    conn.execute("DELETE FROM mijn_ploeg WHERE renner_id=? AND user_id=?", (rid_uit, uid))
-    conn.execute("INSERT OR REPLACE INTO mijn_ploeg (renner_id, user_id) VALUES (?,?)", (rid_in, uid))
+    conn.execute("DELETE FROM mijn_ploeg WHERE renner_id=? AND user_id=? AND seizoen_id=?", (rid_uit, uid, sid))
+    conn.execute("INSERT OR REPLACE INTO mijn_ploeg (renner_id, user_id, seizoen_id) VALUES (?,?,?)", (rid_in, uid, sid))
     conn.execute(
-        "INSERT INTO transfers (renner_uit_id, renner_in_id, kosten, user_id) VALUES (?,?,?,?)",
-        (rid_uit, rid_in, kosten, uid)
+        "INSERT INTO transfers (renner_uit_id, renner_in_id, kosten, user_id, seizoen_id) VALUES (?,?,?,?,?)",
+        (rid_uit, rid_in, kosten, uid, sid)
     )
-    _set_user_inst_val(conn, 'transfer_count', str(volgende))
-    _set_user_inst_val(conn, 'budget', str(new_budget))
+    _set_user_inst_val(conn, 'transfer_count', str(volgende), uid=uid, sid=sid)
+    _set_user_inst_val(conn, 'budget', str(new_budget), uid=uid, sid=sid)
     conn.execute("DELETE FROM geplande_transfers WHERE id=?", (gtid,))
     conn.commit()
     conn.close()
@@ -1696,41 +1846,42 @@ def uitvoeren_gepland_transfer(gtid):
 def get_suggesties():
     uid = current_user_id()
     conn = get_db()
-    inst = _get_inst(conn)
+    sid = current_seizoen_id(conn)
+    inst = _get_inst(conn, uid, sid=sid)
     budget_rest = float(request.args.get("budget", 10))
     max_per_ploeg = int(inst.get("max_per_ploeg", 4))
 
     ploeg_ploegen = conn.execute("""
         SELECT r.ploeg, COUNT(*) as cnt
         FROM mijn_ploeg m JOIN renners r ON r.id=m.renner_id
-        WHERE m.user_id=?
+        WHERE m.user_id=? AND m.seizoen_id=?
         GROUP BY r.ploeg
-    """, (uid,)).fetchall()
+    """, (uid, sid)).fetchall()
     volle_ploegen = {r["ploeg"] for r in ploeg_ploegen if r["cnt"] >= max_per_ploeg}
 
     suggesties = conn.execute("""
         SELECT r.id, r.naam, r.ploeg, r.rol, r.prijs, r.totaal_punten, r.foto,
                ROUND(CAST(r.totaal_punten AS REAL) / NULLIF(r.prijs, 0), 2) as ratio
         FROM renners r
-        WHERE r.actief = 1
-          AND r.id NOT IN (SELECT renner_id FROM mijn_ploeg WHERE user_id=?)
+        WHERE r.actief = 1 AND r.seizoen_id = ?
+          AND r.id NOT IN (SELECT renner_id FROM mijn_ploeg WHERE user_id=? AND seizoen_id=?)
           AND r.prijs <= ?
           AND r.totaal_punten > 0
         ORDER BY ratio DESC
         LIMIT 30
-    """, (uid, budget_rest,)).fetchall()
+    """, (sid, uid, sid, budget_rest,)).fetchall()
 
     if not suggesties:
         suggesties = conn.execute("""
             SELECT r.id, r.naam, r.ploeg, r.rol, r.prijs, r.totaal_punten,
                    0.0 as ratio
             FROM renners r
-            WHERE r.actief = 1
-              AND r.id NOT IN (SELECT renner_id FROM mijn_ploeg WHERE user_id=?)
+            WHERE r.actief = 1 AND r.seizoen_id = ?
+              AND r.id NOT IN (SELECT renner_id FROM mijn_ploeg WHERE user_id=? AND seizoen_id=?)
               AND r.prijs <= ?
             ORDER BY r.prijs DESC
             LIMIT 30
-        """, (uid, budget_rest,)).fetchall()
+        """, (sid, uid, sid, budget_rest,)).fetchall()
 
     result = []
     for s in suggesties:
@@ -1748,6 +1899,7 @@ def get_suggesties():
 def get_koersen():
     uid = current_user_id()
     conn = get_db()
+    sid = current_seizoen_id(conn)
     koersen = conn.execute("""
         SELECT k.*,
                COUNT(DISTINCT o.renner_id) as opstelling_aantal,
@@ -1765,9 +1917,10 @@ def get_koersen():
         FROM koersen k
         LEFT JOIN opstelling o ON o.koers_id = k.id AND o.user_id = ?
         LEFT JOIN resultaten res ON res.koers_id = k.id AND res.renner_id = o.renner_id AND res.user_id = ?
+        WHERE k.seizoen_id = ?
         GROUP BY k.id
         ORDER BY k.datum ASC
-    """, (uid, uid, uid, uid)).fetchall()
+    """, (uid, uid, uid, uid, sid)).fetchall()
     conn.close()
     return jsonify([dict(k) for k in koersen])
 
@@ -1875,6 +2028,7 @@ def set_opstelling(kid):
 @app.route("/api/koersen/<int:kid>/deelnemers")
 def get_deelnemers(kid):
     conn = get_db()
+    sid = current_seizoen_id(conn)
     koers = conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone()
     if not koers:
         conn.close()
@@ -1889,9 +2043,9 @@ def get_deelnemers(kid):
     ploeg = conn.execute("""
         SELECT r.id, r.naam, r.ploeg as renner_ploeg, r.rol, r.prijs, r.totaal_punten, r.foto
         FROM mijn_ploeg m JOIN renners r ON r.id = m.renner_id
-        WHERE m.user_id = ?
+        WHERE m.user_id = ? AND m.seizoen_id = ?
         ORDER BY r.prijs DESC
-    """, (uid,)).fetchall()
+    """, (uid, sid)).fetchall()
     conn.close()
 
     year = koers['datum'][:4]
@@ -1963,6 +2117,7 @@ def get_deelnemers(kid):
 @app.route("/api/koersen/<int:kid>/uitslag-pcs")
 def get_uitslag_pcs(kid):
     conn = get_db()
+    sid = current_seizoen_id(conn)
     koers = conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone()
     if not koers:
         conn.close()
@@ -1977,8 +2132,8 @@ def get_uitslag_pcs(kid):
     ploeg = conn.execute("""
         SELECT r.id, r.naam, r.ploeg as renner_ploeg, r.rol, r.prijs, r.foto
         FROM mijn_ploeg m JOIN renners r ON r.id = m.renner_id
-        WHERE m.user_id = ?
-    """, (uid,)).fetchall()
+        WHERE m.user_id = ? AND m.seizoen_id = ?
+    """, (uid, sid)).fetchall()
 
     opstelling_rows = conn.execute(
         "SELECT renner_id, is_kopman FROM opstelling WHERE koers_id=? AND user_id=?", (kid, uid)
@@ -2331,7 +2486,8 @@ def fetch_koers_favorieten(kid):
 def beste_opstelling(kid):
     uid = current_user_id()
     conn = get_db()
-    inst = _get_inst(conn)
+    sid = current_seizoen_id(conn)
+    inst = _get_inst(conn, uid, sid=sid)
     max_opstelling = int(inst.get("max_starters", 12))
 
     resultaten = conn.execute("""
@@ -2344,9 +2500,9 @@ def beste_opstelling(kid):
         JOIN renners re ON re.id = m.renner_id
         LEFT JOIN resultaten r ON r.renner_id = re.id AND r.koers_id = ? AND r.user_id = ?
         LEFT JOIN opstelling o ON o.renner_id = re.id AND o.koers_id = ? AND o.user_id = ?
-        WHERE m.user_id = ?
+        WHERE m.user_id = ? AND m.seizoen_id = ?
         ORDER BY COALESCE(r.punten, 0) DESC, re.prijs DESC
-    """, (kid, uid, kid, uid, uid)).fetchall()
+    """, (kid, uid, kid, uid, uid, sid)).fetchall()
     conn.close()
 
     alle = [dict(r) for r in resultaten]
@@ -2500,6 +2656,7 @@ def add_resultaten_bulk(kid):
 def get_sporza_session():
     uid = current_user_id()
     conn = get_db()
+    sid = current_seizoen_id(conn)
     # Cleanup: verwijder ongeldige VT/RT waarden (bijv. opgeslagen placeholder '••••••••')
     for sleutel_base in ('sporza_cookie_vt', 'sporza_cookie_rt', 'sporza_cookie'):
         sleutel = f"{sleutel_base}_{uid}"
@@ -2518,8 +2675,8 @@ def get_sporza_session():
             conn.commit()
     # Auto-refresh als AT verlopen is én we een RT hebben
     at = _get_sporza_at(conn)
-    vt = _get_user_inst_val(conn, 'sporza_cookie_vt')
-    rt = _get_user_inst_val(conn, 'sporza_cookie_rt')
+    vt = _get_user_inst_val(conn, 'sporza_cookie_vt', sid=sid)
+    rt = _get_user_inst_val(conn, 'sporza_cookie_rt', sid=sid)
     conn.close()
     verlopen = _jwt_verlopen(at) if at else False
     return jsonify({
@@ -2551,12 +2708,13 @@ def set_sporza_session():
     if not cookie and not cookie_rt:
         return jsonify({"error": "Geen cookie opgegeven"}), 400
     conn = get_db()
+    sid = current_seizoen_id(conn)
     if cookie:
-        _set_user_inst_val(conn, 'sporza_cookie', cookie)
+        _set_user_inst_val(conn, 'sporza_cookie', cookie, sid=sid)
     if cookie_vt:
-        _set_user_inst_val(conn, 'sporza_cookie_vt', cookie_vt)
+        _set_user_inst_val(conn, 'sporza_cookie_vt', cookie_vt, sid=sid)
     if cookie_rt:
-        _set_user_inst_val(conn, 'sporza_cookie_rt', cookie_rt)
+        _set_user_inst_val(conn, 'sporza_cookie_rt', cookie_rt, sid=sid)
     conn.commit()
     # Als alleen RT opgegeven: probeer meteen een verse AT te halen
     if cookie_rt and not cookie:
@@ -2583,10 +2741,11 @@ def _jwt_verlopen(token):  # ook gebruikt in get_sporza_session
         return False
 
 
-def _refresh_sporza_at(conn):
+def _refresh_sporza_at(conn, sid=None):
     """Vernieuw de Sporza AT via de opgeslagen RT cookie.
     Geeft de nieuwe AT-waarde terug, of None als refresh mislukt."""
-    rt = (_get_user_inst_val(conn, 'sporza_cookie_rt') or '').strip()
+    if sid is None: sid = current_seizoen_id(conn)
+    rt = (_get_user_inst_val(conn, 'sporza_cookie_rt', sid=sid) or '').strip()
     if not rt:
         app.logger.warning("_refresh_sporza_at: geen RT opgeslagen")
         return None
@@ -2617,7 +2776,7 @@ def _refresh_sporza_at(conn):
                         new_at = val
                         break
         if new_at and new_at != 'deleted':
-            _set_user_inst_val(conn, 'sporza_cookie', new_at)
+            _set_user_inst_val(conn, 'sporza_cookie', new_at, sid=sid)
             conn.commit()
             app.logger.info("_refresh_sporza_at: nieuwe AT opgeslagen ✅")
             return new_at
@@ -2627,12 +2786,13 @@ def _refresh_sporza_at(conn):
     return None
 
 
-def _get_sporza_at(conn):
+def _get_sporza_at(conn, sid=None):
     """Haal de Sporza AT op en vernieuw automatisch via RT als het token verlopen is."""
-    at = (_get_user_inst_val(conn, 'sporza_cookie') or '').strip()
+    if sid is None: sid = current_seizoen_id(conn)
+    at = (_get_user_inst_val(conn, 'sporza_cookie', sid=sid) or '').strip()
     # Refresh als AT leeg is OF verlopen — zodat ook RT-only setup werkt
     if (not at) or _jwt_verlopen(at):
-        new_at = _refresh_sporza_at(conn)
+        new_at = _refresh_sporza_at(conn, sid=sid)
         if new_at:
             at = new_at
     return at
@@ -2702,7 +2862,9 @@ def _find_lineup_with_riders(obj, depth=0):
 def sporza_mini_competities():
     """Haal de mini-competities op van Sporza WM via de Remix .data endpoints."""
     conn = get_db()
-    cookie_at = _get_sporza_at(conn)
+    sid = current_seizoen_id(conn)
+    edition = _get_sporza_edition(conn, sid)
+    cookie_at = _get_sporza_at(conn, sid=sid)
     conn.close()
 
     if not cookie_at:
@@ -2720,7 +2882,7 @@ def sporza_mini_competities():
     # 1. Haal competitions.data op (Remix RSC endpoint — werkt wél met cookie)
     try:
         resp = _requests.get(
-            f"{SPORZA_BASE}/{SPORZA_EDITION}/competitions.data",
+            f"{SPORZA_BASE}/{edition}/competitions.data",
             headers=headers, timeout=20
         )
     except Exception as e:
@@ -2754,7 +2916,7 @@ def sporza_mini_competities():
         if slug:
             try:
                 det = _requests.get(
-                    f"{SPORZA_BASE}/{SPORZA_EDITION}/competitions/{slug}.data",
+                    f"{SPORZA_BASE}/{edition}/competitions/{slug}.data",
                     headers=headers, timeout=15
                 )
                 if det.status_code == 200:
@@ -2803,7 +2965,9 @@ def sporza_mini_competities():
 def sporza_mini_team(slug, team_code):
     """Haal de ploegsamenstelling op van een deelnemer in een mini-competitie."""
     conn = get_db()
-    cookie_at = _get_sporza_at(conn)
+    sid = current_seizoen_id(conn)
+    edition = _get_sporza_edition(conn, sid)
+    cookie_at = _get_sporza_at(conn, sid=sid)
     conn.close()
 
     if not cookie_at:
@@ -2820,7 +2984,7 @@ def sporza_mini_team(slug, team_code):
 
     try:
         resp = _requests.get(
-            f"{SPORZA_BASE}/{SPORZA_EDITION}/competitions/{slug}/team/{team_code}.data",
+            f"{SPORZA_BASE}/{edition}/competitions/{slug}/team/{team_code}.data",
             headers=headers, timeout=15
         )
     except Exception as e:
@@ -2847,7 +3011,7 @@ def sporza_mini_team(slug, team_code):
     # riders hebben geen totalBasePoints → haal punten op uit de algemene cyclists-lijst
     try:
         cyl_resp = _requests.get(
-            f"{SPORZA_BASE}/api/{SPORZA_EDITION}/cyclists",
+            f"{SPORZA_BASE}/api/{edition}/cyclists",
             headers=headers, timeout=15
         )
         cyclist_punten = {}
@@ -2883,28 +3047,30 @@ def sporza_mini_transfer_tips():
     """Transfer suggesties op basis van renners in mini-competitie ploegen."""
     uid = current_user_id()
     conn = get_db()
+    sid = current_seizoen_id(conn)
+    edition = _get_sporza_edition(conn, sid)
 
     # Eigen ploeg uit DB
     eigen_ploeg = conn.execute("""
         SELECT r.id, r.naam, r.prijs, r.totaal_punten
         FROM mijn_ploeg m JOIN renners r ON r.id = m.renner_id
-        WHERE m.user_id = ?
-    """, (uid,)).fetchall()
+        WHERE m.user_id = ? AND m.seizoen_id = ?
+    """, (uid, sid)).fetchall()
     eigen_lijst = [dict(r) for r in eigen_ploeg]
     eigen_namen_norm = {_norm(r["naam"]) for r in eigen_lijst}
 
     # Budget resterend berekenen
-    inst = _get_inst(conn)
+    inst = _get_inst(conn, uid, sid=sid)
     budget = float(inst.get("budget", 100.0))
     uitgegeven = sum(r["prijs"] for r in eigen_ploeg)
     budget_rest = round(budget - uitgegeven, 2)
 
     # Alle lokale actieve renners voor naam-matching en quickAdd
     alle_renners_list = [dict(r) for r in conn.execute(
-        "SELECT id, naam, prijs FROM renners WHERE actief=1"
+        "SELECT id, naam, prijs FROM renners WHERE actief=1 AND seizoen_id=?", (sid,)
     ).fetchall()]
 
-    cookie_at = _get_sporza_at(conn)
+    cookie_at = _get_sporza_at(conn, sid=sid)
     conn.close()
 
     if not cookie_at:
@@ -2921,7 +3087,7 @@ def sporza_mini_transfer_tips():
     # Sporza renner-punten ophalen (gedeeld met sporza_mini_team)
     try:
         cyl_resp = _requests.get(
-            f"{SPORZA_BASE}/api/{SPORZA_EDITION}/cyclists", headers=headers, timeout=15
+            f"{SPORZA_BASE}/api/{edition}/cyclists", headers=headers, timeout=15
         )
         cyclist_punten = (
             {c["id"]: c.get("totalBasePoints", 0) for c in cyl_resp.json().get("cyclists", [])}
@@ -2933,7 +3099,7 @@ def sporza_mini_transfer_tips():
     # Mini-competitie rankings ophalen
     try:
         resp = _requests.get(
-            f"{SPORZA_BASE}/{SPORZA_EDITION}/competitions.data", headers=headers, timeout=20
+            f"{SPORZA_BASE}/{edition}/competitions.data", headers=headers, timeout=20
         )
         if resp.status_code != 200:
             return jsonify([])
@@ -2953,7 +3119,7 @@ def sporza_mini_transfer_tips():
         # Volledig ledenlijst ophalen
         try:
             det = _requests.get(
-                f"{SPORZA_BASE}/{SPORZA_EDITION}/competitions/{slug}.data",
+                f"{SPORZA_BASE}/{edition}/competitions/{slug}.data",
                 headers=headers, timeout=15
             )
             if det.status_code != 200:
@@ -2980,7 +3146,7 @@ def sporza_mini_transfer_tips():
                 continue
             try:
                 t_resp = _requests.get(
-                    f"{SPORZA_BASE}/{SPORZA_EDITION}/competitions/{slug}/team/{team_code}.data",
+                    f"{SPORZA_BASE}/{edition}/competitions/{slug}/team/{team_code}.data",
                     headers=headers, timeout=15
                 )
                 if t_resp.status_code != 200:
@@ -3086,12 +3252,14 @@ def doorzetten_sporza(kid):
 
 def _doorzetten_sporza_impl(kid):
     conn = get_db()
+    sid = current_seizoen_id(conn)
+    edition = _get_sporza_edition(conn, sid)
     koers = conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone()
     if not koers:
         conn.close()
         return jsonify({"error": "Koers niet gevonden"}), 404
 
-    match_id = SPORZA_MATCH_IDS.get(koers['naam'])
+    match_id = koers.get('sporza_match_id')
     if not match_id:
         conn.close()
         return jsonify({"error": f"Geen Sporza WM koppeling voor '{koers['naam']}'"}), 404
@@ -3111,13 +3279,13 @@ def _doorzetten_sporza_impl(kid):
     # Haal lokale rennersnamen op
     mijn_ploeg = conn.execute("""
         SELECT r.id, r.naam FROM mijn_ploeg m JOIN renners r ON r.id = m.renner_id
-        WHERE m.user_id = ?
-    """, (uid,)).fetchall()
+        WHERE m.user_id = ? AND m.seizoen_id = ?
+    """, (uid, sid)).fetchall()
 
-    sporza_cookie = _get_sporza_at(conn)
+    sporza_cookie = _get_sporza_at(conn, sid=sid)
 
     # Haal ook de VT cookie op (optioneel maar verhoogt kans van slagen)
-    sporza_cookie_vt_val = (_get_user_inst_val(conn, 'sporza_cookie_vt') or '').strip()
+    sporza_cookie_vt_val = (_get_user_inst_val(conn, 'sporza_cookie_vt', sid=sid) or '').strip()
     conn.close()
 
     if not sporza_cookie:
@@ -3131,7 +3299,7 @@ def _doorzetten_sporza_impl(kid):
     def _base_headers(content_type=None):
         h = {
             "Origin": SPORZA_BASE,
-            "Referer": f"{SPORZA_BASE}/{SPORZA_EDITION}/team",
+            "Referer": f"{SPORZA_BASE}/{edition}/team",
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         }
         if content_type:
@@ -3150,7 +3318,7 @@ def _doorzetten_sporza_impl(kid):
     # Bezoek team-pagina om sessie-cookies te ontvangen (CSRF, wm-session e.d.)
     try:
         scraper.get(
-            f"{SPORZA_BASE}/{SPORZA_EDITION}/team",
+            f"{SPORZA_BASE}/{edition}/team",
             headers={**_base_headers(), "Accept": "text/html,application/xhtml+xml,*/*;q=0.9"},
             timeout=15,
         )
@@ -3160,7 +3328,7 @@ def _doorzetten_sporza_impl(kid):
     sporza_riders = {}  # {id: fullName}
     bron_label_riders = "onbekend"
 
-    team_data_url = f"{SPORZA_BASE}/{SPORZA_EDITION}/team.data"
+    team_data_url = f"{SPORZA_BASE}/{edition}/team.data"
     wm_match_id = None
     try:
         team_resp = scraper.get(team_data_url, headers=_base_headers(), timeout=20)
@@ -3176,7 +3344,7 @@ def _doorzetten_sporza_impl(kid):
 
     # Fallback: gebruik de volledige cyclists API (alle ~200 renners)
     if not sporza_riders:
-        cyclists_url = f"{SPORZA_BASE}/api/{SPORZA_EDITION}/cyclists"
+        cyclists_url = f"{SPORZA_BASE}/api/{edition}/cyclists"
         try:
             cyl_resp = scraper.get(cyclists_url, headers=_base_headers(), timeout=20)
             if cyl_resp.status_code in (401, 403):
@@ -3192,7 +3360,7 @@ def _doorzetten_sporza_impl(kid):
         return jsonify({"error": "Kon geen renners vinden in Sporza WM. Controleer je cookie."}), 503
 
     # Invert: naam (genormaliseerd) → id
-    naam_to_id = {_norm(naam): sid for sid, naam in sporza_riders.items()}
+    naam_to_id = {_norm(naam): sporza_id for sporza_id, naam in sporza_riders.items()}
 
     def _sporza_match(db_naam, sporza_naam_norm):
         """Match inclusief initialen: 'A.W. Philipsen' matcht 'albert philipsen'."""
@@ -3222,22 +3390,22 @@ def _doorzetten_sporza_impl(kid):
     niet_gevonden = []
     for r in mijn_ploeg:
         norm_naam = _norm(r["naam"])
-        sid = naam_to_id.get(norm_naam)
-        if not sid:
+        sporza_id = naam_to_id.get(norm_naam)
+        if not sporza_id:
             # Achternaam-matching + initialen-matching
             for snaam, snorm in [(naam, _norm(naam)) for naam in sporza_riders.values()]:
                 if _sporza_match(r["naam"], snorm):
-                    sid = next(k for k, v in sporza_riders.items() if _norm(v) == snorm)
+                    sporza_id = next(k for k, v in sporza_riders.items() if _norm(v) == snorm)
                     break
-        if not sid:
+        if not sporza_id:
             niet_gevonden.append(r["naam"])
             continue
         if r["id"] == kopman_id and r["id"] in opstelling_ids:
-            lineup.append({"id": sid, "lineupType": "CAPTAIN"})
+            lineup.append({"id": sporza_id, "lineupType": "CAPTAIN"})
         elif r["id"] in opstelling_ids:
-            lineup.append({"id": sid, "lineupType": "NORMAL"})
+            lineup.append({"id": sporza_id, "lineupType": "NORMAL"})
         else:
-            lineup.append({"id": sid, "lineupType": "SUBSTITUTE"})
+            lineup.append({"id": sporza_id, "lineupType": "SUBSTITUTE"})
 
     if niet_gevonden:
         return jsonify({
@@ -3256,7 +3424,7 @@ def _doorzetten_sporza_impl(kid):
 
     # POST naar Sporza WM — gebruik WM match_id (klein volgnummer) + .data suffix
     actual_match_id = wm_match_id if wm_match_id else match_id
-    post_url = f"{SPORZA_BASE}/api/{SPORZA_EDITION}/gameteams/lineups/{actual_match_id}.data"
+    post_url = f"{SPORZA_BASE}/api/{edition}/gameteams/lineups/{actual_match_id}.data"
     app.logger.info(f"Sporza POST: gracenote={match_id}, wm_match_id={wm_match_id}, url={post_url}")
     try:
         post_resp = scraper.post(
@@ -3314,7 +3482,7 @@ def _doorzetten_sporza_impl(kid):
     import json as _json
     lineup_json = _json.dumps({"action": "SAVE_LINEUP", "lineup": lineup}, ensure_ascii=False)
     console_cmd = (
-        f"fetch('/api/{SPORZA_EDITION}/gameteams/lineups/{actual_match_id}.data',"
+        f"fetch('/api/{edition}/gameteams/lineups/{actual_match_id}.data',"
         f"{{method:'POST',headers:{{'Content-Type':'application/json'}},"
         f"body:JSON.stringify({lineup_json})}}).then(r=>r.text())"
         f".then(d=>{{try{{let j=JSON.parse(d);alert(j.success?'✅ Opgeslagen!':'❌ '+(j.error||d))}}catch(e){{alert('Response: '+d.substring(0,200))}}}}))"
@@ -3343,22 +3511,24 @@ def _doorzetten_sporza_impl(kid):
 def get_koers_live_debug(kid):
     """Debug: test meerdere live-data bronnen."""
     conn = get_db()
+    sid = current_seizoen_id(conn)
+    edition = _get_sporza_edition(conn, sid)
     koers = conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone()
-    cookie_at = _get_sporza_at(conn)
+    cookie_at = _get_sporza_at(conn, sid=sid)
     conn.close()
     slug = PCS_SLUGS.get(koers['naam'])
     year = koers['datum'][:4]
-    match_id = SPORZA_MATCH_IDS.get(koers['naam'])
+    match_id = koers.get('sporza_match_id')
     scraper = cloudscraper.create_scraper()
     ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36"
     results = {}
 
     # ── 1. Sporza WM zonder cookie (publieke score endpoints) ─────────────────
     sporza_urls = [
-        f"{SPORZA_BASE}/api/{SPORZA_EDITION}/matches/{match_id}/scores",
-        f"{SPORZA_BASE}/api/{SPORZA_EDITION}/matches/{match_id}",
-        f"{SPORZA_BASE}/api/{SPORZA_EDITION}/races/{match_id}/standings",
-        f"{SPORZA_BASE}/api/{SPORZA_EDITION}/matches/{match_id}/riders",
+        f"{SPORZA_BASE}/api/{edition}/matches/{match_id}/scores",
+        f"{SPORZA_BASE}/api/{edition}/matches/{match_id}",
+        f"{SPORZA_BASE}/api/{edition}/races/{match_id}/standings",
+        f"{SPORZA_BASE}/api/{edition}/matches/{match_id}/riders",
     ]
     for url in sporza_urls:
         try:
@@ -3369,13 +3539,13 @@ def get_koers_live_debug(kid):
 
     # ── 2. Sporza WM RSC zonder cookie ────────────────────────────────────────
     rsc_urls = [
-        f"{SPORZA_BASE}/{SPORZA_EDITION}/match/{match_id}.data",
-        f"{SPORZA_BASE}/{SPORZA_EDITION}/races/{match_id}/results.data",
-        f"{SPORZA_BASE}/api/{SPORZA_EDITION}/races/{match_id}/results",
+        f"{SPORZA_BASE}/{edition}/match/{match_id}.data",
+        f"{SPORZA_BASE}/{edition}/races/{match_id}/results.data",
+        f"{SPORZA_BASE}/api/{edition}/races/{match_id}/results",
     ]
     for url in rsc_urls:
         try:
-            r = _requests.get(url, headers={"User-Agent": ua, "Accept": "*/*", "Next-Url": f"/{SPORZA_EDITION}/match/{match_id}"}, timeout=8)
+            r = _requests.get(url, headers={"User-Agent": ua, "Accept": "*/*", "Next-Url": f"/{edition}/match/{match_id}"}, timeout=8)
             results[url] = {"status": r.status_code, "length": len(r.text), "preview": r.text[:500]}
         except Exception as e:
             results[url] = {"error": str(e)}
@@ -3441,6 +3611,8 @@ def get_koers_live_debug(kid):
 def get_koers_live(kid):
     """Live wedstrijddata: eerst via Sporza WM match-API, dan PCS als fallback."""
     conn = get_db()
+    sid = current_seizoen_id(conn)
+    edition = _get_sporza_edition(conn, sid)
     koers = conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone()
     if not koers:
         conn.close()
@@ -3457,15 +3629,15 @@ def get_koers_live(kid):
     }
     ploeg_namen = {
         r["naam"] for r in conn.execute(
-            "SELECT r.naam FROM mijn_ploeg m JOIN renners r ON r.id=m.renner_id WHERE m.user_id=?",
-            (uid,)
+            "SELECT r.naam FROM mijn_ploeg m JOIN renners r ON r.id=m.renner_id WHERE m.user_id=? AND m.seizoen_id=?",
+            (uid, sid)
         ).fetchall()
     }
 
-    match_id = SPORZA_MATCH_IDS.get(koers['naam'])
+    match_id = koers.get('sporza_match_id')
     pcs_slug = PCS_SLUGS.get(koers['naam'])
 
-    cookie_at = _get_sporza_at(conn)
+    cookie_at = _get_sporza_at(conn, sid=sid)
     alias_map = _get_alias_map(conn)  # {db_naam → set(aliassen)}
     conn.close()
 
@@ -3483,9 +3655,9 @@ def get_koers_live(kid):
         try:
             # Probeer /api/{edition}/matches/{match_id}/scores (renner per positie)
             for url_tmpl in [
-                f"{SPORZA_BASE}/api/{SPORZA_EDITION}/matches/{match_id}/scores",
-                f"{SPORZA_BASE}/api/{SPORZA_EDITION}/matches/{match_id}",
-                f"{SPORZA_BASE}/{SPORZA_EDITION}/match/{match_id}.data",
+                f"{SPORZA_BASE}/api/{edition}/matches/{match_id}/scores",
+                f"{SPORZA_BASE}/api/{edition}/matches/{match_id}",
+                f"{SPORZA_BASE}/{edition}/match/{match_id}.data",
             ]:
                 r = _requests.get(url_tmpl, headers=headers_sporza, timeout=10)
                 if r.status_code == 200:
@@ -3524,7 +3696,7 @@ def get_koers_live(kid):
     if not klassement and match_id and cookie_at and not _jwt_verlopen(cookie_at):
         try:
             r = _requests.get(
-                f"{SPORZA_BASE}/{SPORZA_EDITION}/match/{match_id}.data",
+                f"{SPORZA_BASE}/{edition}/match/{match_id}.data",
                 headers=headers_sporza, timeout=10
             )
             if r.status_code == 200:
@@ -3669,18 +3841,20 @@ def get_koers_live(kid):
 def debug_sporza(kid):
     """Debug endpoint: toon de raw Sporza lineup-POST response."""
     conn = get_db()
+    sid = current_seizoen_id(conn)
+    edition = _get_sporza_edition(conn, sid)
     koers = conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone()
     if not koers:
         conn.close()
         return jsonify({"error": "Koers niet gevonden"}), 404
-    match_id = SPORZA_MATCH_IDS.get(koers['naam'])
-    cookie_at = _get_sporza_at(conn)
+    match_id = koers.get('sporza_match_id')
+    cookie_at = _get_sporza_at(conn, sid=sid)
     conn.close()
     if not match_id or not cookie_at:
         return jsonify({"error": "Geen match_id of cookie"}), 400
     scraper = cloudscraper.create_scraper()
     # Test GET op gameteams endpoint
-    get_url = f"{SPORZA_BASE}/api/{SPORZA_EDITION}/gameteams/lineups/{match_id}"
+    get_url = f"{SPORZA_BASE}/api/{edition}/gameteams/lineups/{match_id}"
     try:
         r = scraper.get(get_url, headers={"Cookie": f"sporza-site_profile_at={cookie_at}"}, timeout=15)
         return jsonify({"url": get_url, "status": r.status_code, "body": r.text[:1000]})
@@ -3692,7 +3866,9 @@ def debug_sporza(kid):
 def sporza_lineup_debug(match_id):
     """Diagnostisch: test stap voor stap de Sporza session + lineup POST."""
     conn = get_db()
-    at = _get_sporza_at(conn)
+    sid = current_seizoen_id(conn)
+    edition = _get_sporza_edition(conn, sid)
+    at = _get_sporza_at(conn, sid=sid)
     vt_row = conn.execute(
         "SELECT waarde FROM instellingen WHERE sleutel='sporza_cookie_vt'"
     ).fetchone()
@@ -3707,7 +3883,7 @@ def sporza_lineup_debug(match_id):
     base_h = {
         "User-Agent": ua,
         "Origin": SPORZA_BASE,
-        "Referer": f"{SPORZA_BASE}/{SPORZA_EDITION}/team",
+        "Referer": f"{SPORZA_BASE}/{edition}/team",
     }
 
     # Session cookie jar — geen Cookie header, session beheert cookies zelf
@@ -3723,7 +3899,7 @@ def sporza_lineup_debug(match_id):
     # Stap 1: GET team-pagina om sessie-cookies te ontvangen
     try:
         r = scraper.get(
-            f"{SPORZA_BASE}/{SPORZA_EDITION}/team",
+            f"{SPORZA_BASE}/{edition}/team",
             headers={**base_h, "Accept": "text/html,application/xhtml+xml,*/*;q=0.9"},
             timeout=15,
         )
@@ -3740,7 +3916,7 @@ def sporza_lineup_debug(match_id):
     # Stap 2: GET /api/gameteams (bestaat dit endpoint?)
     try:
         r = scraper.get(
-            f"{SPORZA_BASE}/api/{SPORZA_EDITION}/gameteams",
+            f"{SPORZA_BASE}/api/{edition}/gameteams",
             headers={**base_h, "Accept": "application/json"},
             timeout=15,
         )
@@ -3752,7 +3928,7 @@ def sporza_lineup_debug(match_id):
     except Exception as e:
         stappen.append({"stap": "2. GET /api/gameteams", "error": str(e)})
 
-    lineup_url = f"{SPORZA_BASE}/api/{SPORZA_EDITION}/gameteams/lineups/{match_id}"
+    lineup_url = f"{SPORZA_BASE}/api/{edition}/gameteams/lineups/{match_id}"
 
     # Stap 3: GET huidige lineup voor dit match_id
     try:
@@ -3805,13 +3981,13 @@ def sporza_lineup_debug(match_id):
         stappen.append({"stap": "4b. POST /api/lineups (RSC)", "error": str(e)})
 
     # Stap 5: POST naar de hoofdpagina (/<edition>) — React Router stuurt form-actions hier naartoe
-    edition_url = f"{SPORZA_BASE}/{SPORZA_EDITION}"
+    edition_url = f"{SPORZA_BASE}/{edition}"
     try:
         r = scraper.post(
             edition_url,
             headers={**base_h, "Content-Type": "application/json",
                      "Accept": "text/x-component",
-                     "Referer": f"{SPORZA_BASE}/{SPORZA_EDITION}"},
+                     "Referer": f"{SPORZA_BASE}/{edition}"},
             json=test_body,
             timeout=15,
         )
@@ -3824,7 +4000,7 @@ def sporza_lineup_debug(match_id):
         stappen.append({"stap": "5. POST hoofdpagina", "error": str(e)})
 
     # Stap 6: POST naar /<edition>/team (teampagina als action-url)
-    team_url = f"{SPORZA_BASE}/{SPORZA_EDITION}/team"
+    team_url = f"{SPORZA_BASE}/{edition}/team"
     try:
         r = scraper.post(
             team_url,
@@ -3847,7 +4023,7 @@ def sporza_lineup_debug(match_id):
     team_data_text = None
     try:
         r = scraper.get(
-            f"{SPORZA_BASE}/{SPORZA_EDITION}/team.data",
+            f"{SPORZA_BASE}/{edition}/team.data",
             headers={**base_h, "Accept": "*/*"},
             timeout=15,
         )
@@ -3872,7 +4048,7 @@ def sporza_lineup_debug(match_id):
     wm_id_for_test = None
     if team_data_text:
         wm_id_for_test = _find_wm_match_id(team_data_text, str(match_id))
-    data_lineup_url = f"{SPORZA_BASE}/api/{SPORZA_EDITION}/gameteams/lineups/{wm_id_for_test or match_id}.data"
+    data_lineup_url = f"{SPORZA_BASE}/api/{edition}/gameteams/lineups/{wm_id_for_test or match_id}.data"
     try:
         r = scraper.post(
             data_lineup_url,
@@ -4014,7 +4190,11 @@ def sporza_verbinding_test():
 
     # Live test: GET /api/{edition}/cyclists — ondersteunt GET en vereist geldige cookie
     scraper = cloudscraper.create_scraper()
-    test_url = f"{SPORZA_BASE}/api/{SPORZA_EDITION}/cyclists"
+    _conn_test = get_db()
+    _sid_test = current_seizoen_id(_conn_test)
+    _edition_test = _get_sporza_edition(_conn_test, _sid_test)
+    _conn_test.close()
+    test_url = f"{SPORZA_BASE}/api/{_edition_test}/cyclists"
     try:
         r = scraper.get(
             test_url,
@@ -4055,6 +4235,7 @@ def sporza_verbinding_test():
 def get_stats():
     uid = current_user_id()
     conn = get_db()
+    sid = current_seizoen_id(conn)
 
     # Enkel punten voor renners die in de opstelling stonden voor die koers
     totaal = conn.execute("""
@@ -4070,10 +4251,10 @@ def get_stats():
         FROM koersen k
         LEFT JOIN opstelling o ON o.koers_id = k.id AND o.user_id = ?
         LEFT JOIN resultaten r ON r.koers_id = k.id AND r.renner_id = o.renner_id AND r.user_id = ?
-        WHERE k.afgelopen = 1
+        WHERE k.afgelopen = 1 AND k.seizoen_id = ?
         GROUP BY k.id
         ORDER BY k.datum ASC
-    """, (uid, uid)).fetchall()
+    """, (uid, uid, sid)).fetchall()
 
     top_renners = conn.execute("""
         SELECT re.id, re.naam, re.ploeg, re.rol,
@@ -4082,11 +4263,11 @@ def get_stats():
         JOIN renners re ON re.id = r.renner_id
         JOIN opstelling o ON o.renner_id = r.renner_id AND o.koers_id = r.koers_id AND o.user_id = ?
         WHERE r.user_id = ?
-          AND r.renner_id IN (SELECT renner_id FROM mijn_ploeg WHERE user_id = ?)
+          AND r.renner_id IN (SELECT renner_id FROM mijn_ploeg WHERE user_id = ? AND seizoen_id = ?)
         GROUP BY r.renner_id
         HAVING SUM(r.punten) > 0
         ORDER BY punten DESC
-    """, (uid, uid, uid)).fetchall()
+    """, (uid, uid, uid, sid)).fetchall()
 
     kopman_stats = conn.execute("""
         SELECT re.id, re.naam, re.ploeg, re.foto,
@@ -4097,12 +4278,12 @@ def get_stats():
         LEFT JOIN resultaten r ON r.renner_id = o.renner_id AND r.koers_id = o.koers_id AND r.user_id = ?
         WHERE o.is_kopman = 1
           AND o.user_id = ?
-          AND o.renner_id IN (SELECT renner_id FROM mijn_ploeg WHERE user_id = ?)
+          AND o.renner_id IN (SELECT renner_id FROM mijn_ploeg WHERE user_id = ? AND seizoen_id = ?)
         GROUP BY re.id
         ORDER BY bonus_punten DESC
-    """, (uid, uid, uid)).fetchall()
+    """, (uid, uid, uid, sid)).fetchall()
 
-    inst = _get_inst(conn)
+    inst = _get_inst(conn, uid, sid=sid)
     conn.close()
     return jsonify({
         "totaal_punten": totaal,
@@ -4119,7 +4300,8 @@ def get_stats():
 def _build_ai_context(conn):
     """Bouw een context-string op vanuit de database voor de AI-assistent."""
     uid = current_user_id()
-    inst = _get_inst(conn)
+    sid = current_seizoen_id(conn)
+    inst = _get_inst(conn, uid, sid=sid)
     budget = float(inst.get("budget", 120))
     max_renners = int(inst.get("max_renners", 20))
     transfers_gratis = int(inst.get("transfers_gratis", 3))
@@ -4131,25 +4313,25 @@ def _build_ai_context(conn):
                r.totaal_punten, r.geblesseerd
         FROM mijn_ploeg m
         JOIN renners r ON r.id = m.renner_id
-        WHERE m.user_id = ?
+        WHERE m.user_id = ? AND m.seizoen_id = ?
         ORDER BY r.prijs DESC
-    """, (uid,)).fetchall()
+    """, (uid, sid)).fetchall()
 
     uitgegeven = sum(r["prijs"] for r in ploeg)
     budget_resterend = round(budget - uitgegeven, 2)
 
     koersen = conn.execute(
-        "SELECT naam, datum, soort, afgelopen FROM koersen ORDER BY datum ASC"
+        "SELECT naam, datum, soort, afgelopen FROM koersen WHERE seizoen_id=? ORDER BY datum ASC", (sid,)
     ).fetchall()
 
     beschikbaar = conn.execute("""
         SELECT naam, ploeg, rol, prijs, totaal_punten
         FROM renners
-        WHERE actief = 1
-          AND id NOT IN (SELECT renner_id FROM mijn_ploeg WHERE user_id = ?)
+        WHERE actief = 1 AND seizoen_id = ?
+          AND id NOT IN (SELECT renner_id FROM mijn_ploeg WHERE user_id = ? AND seizoen_id = ?)
         ORDER BY totaal_punten DESC
         LIMIT 20
-    """, (uid,)).fetchall()
+    """, (sid, uid, sid)).fetchall()
 
     ploeg_lines = "\n".join(
         f"  - {r['naam']} ({r['renner_ploeg']}, {r['rol']}, "
@@ -4333,21 +4515,22 @@ Voeg dit blok NIET toe bij algemene vragen of analyses zonder specifieke wissel.
             reden    = tj.get("reden", "")
 
             _ai_uid = current_user_id()
+            _ai_sid = current_seizoen_id(conn)
             ploeg_renners = conn.execute("""
                 SELECT r.id, r.naam, r.prijs
                 FROM mijn_ploeg m JOIN renners r ON r.id = m.renner_id
-                WHERE m.user_id = ?
-            """, (_ai_uid,)).fetchall()
+                WHERE m.user_id = ? AND m.seizoen_id = ?
+            """, (_ai_uid, _ai_sid)).fetchall()
 
             alle_renners = conn.execute("""
                 SELECT id, naam, prijs FROM renners
-                WHERE actief = 1 AND id NOT IN (SELECT renner_id FROM mijn_ploeg WHERE user_id = ?)
-            """, (_ai_uid,)).fetchall()
+                WHERE actief = 1 AND id NOT IN (SELECT renner_id FROM mijn_ploeg WHERE user_id = ? AND seizoen_id = ?)
+            """, (_ai_uid, _ai_sid)).fetchall()
 
             renner_uit = next((r for r in ploeg_renners if _name_match(r["naam"], {_norm(uit_naam)})), None)
             renner_in  = next((r for r in alle_renners  if _name_match(r["naam"], {_norm(in_naam)})),  None)
 
-            inst   = _get_inst(conn)
+            inst   = _get_inst(conn, _ai_uid, sid=_ai_sid)
             count  = int(inst.get("transfer_count", 0))
             gratis = int(inst.get("transfers_gratis", 3))
             budget = float(inst.get("budget", 120))
