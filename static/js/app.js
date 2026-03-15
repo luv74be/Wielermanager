@@ -1502,7 +1502,7 @@ async function openResultaten(kid, naam, soort) {
                 return `<tr ${!r.in_opstelling && r.in_mijn_ploeg ? 'style="opacity:0.45"' : ''}>
                   <td class="text-muted">${isEchteWinnaar ? '🏆' : (r.positie ?? '—')}</td>
                   <td style="width:32px;padding-right:0">${avatarHtml(r)}</td>
-                  <td class="fw-700" ${r.in_mijn_ploeg ? `style="cursor:pointer" ondblclick="openRennerDetail(${r.renner_id})"` : ''}>${r.naam}
+                  <td class="fw-700" ${r.in_mijn_ploeg ? `style="cursor:pointer" ondblclick="openRennerDetail(${r.renner_id})"` : ''}>${isEchteWinnaar ? '🏆 ' : ''}${r.naam}
                     ${r.in_opstelling ? '<span class="in-ploeg-dot"></span>' : ''}
                     ${r.is_kopman ? ' ⭐' : ''}
                     ${r.in_mijn_ploeg && !r.in_opstelling ? ' <span class="text-muted fs-sm">(bus)</span>' : ''}
@@ -1817,7 +1817,7 @@ async function renderKoersDetail() {
                       return `<tr ${!r.in_opstelling && r.in_mijn_ploeg ? 'style="opacity:0.45"' : ''}>
                         <td class="text-muted">${isEchteWinnaar ? '🏆' : (r.positie ?? '—')}</td>
                         <td style="width:32px;padding-right:0">${avatarHtml(r)}</td>
-                        <td class="fw-700" ${r.in_mijn_ploeg ? `style="cursor:pointer" ondblclick="openRennerDetail(${r.renner_id})"` : ''}>${r.naam}
+                        <td class="fw-700" ${r.in_mijn_ploeg ? `style="cursor:pointer" ondblclick="openRennerDetail(${r.renner_id})"` : ''}>${isEchteWinnaar ? '🏆 ' : ''}${r.naam}
                           ${r.in_opstelling ? '<span class="in-ploeg-dot"></span>' : ''}
                           ${r.is_kopman ? ' ⭐' : ''}
                           ${r.in_mijn_ploeg && !r.in_opstelling ? ' <span class="text-muted fs-sm">(bus)</span>' : ''}
