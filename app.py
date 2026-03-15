@@ -629,7 +629,11 @@ def admin_delete_seizoen(sid):
 
 @app.route('/api/admin/seizoenen/<int:sid>/seed', methods=['POST'])
 def admin_seed_seizoen(sid):
-    """Seed standaard renners & koersen voor een seizoen (alleen als nog leeg)."""
+    """Seed standaard renners & koersen voor een seizoen (alleen als nog leeg).
+    Renners worden opgehaald van de Sporza cyclists API voor het correcte edition
+    (bv. vrjr-v-26 voor vrouwen, vrjr-m-26 voor mannen). Alleen bij API-fout
+    wordt de statische fallback-lijst gebruikt.
+    """
     err, code = _require_admin()
     if err: return err, code
     conn = get_db()
@@ -637,12 +641,80 @@ def admin_seed_seizoen(sid):
     if not sz:
         conn.close()
         return jsonify({'error': 'Seizoen niet gevonden'}), 404
-    seed_renners(conn, sid)
+
+    # ── Renners: haal op via Sporza cyclists API voor dit seizoen ─────────────
+    r_count_before = conn.execute(
+        "SELECT COUNT(*) FROM renners WHERE seizoen_id=?", (sid,)
+    ).fetchone()[0]
+
+    sporza_renners_loaded = False
+    if r_count_before == 0:
+        edition = sz['sporza_edition']
+        if edition and edition not in ('', 'onbekend'):
+            try:
+                url = f"{SPORZA_BASE}/api/{edition}/cyclists"
+                scraper = cloudscraper.create_scraper()
+                resp = scraper.get(url, timeout=20)
+                if resp.status_code == 200:
+                    cyclists = resp.json().get('cyclists', [])
+                    if cyclists:
+                        def _sporza_rol(c):
+                            spec = (c.get('speciality') or c.get('specialty') or '').lower()
+                            if 'climb' in spec or 'grimpeur' in spec:
+                                return 'klimmer'
+                            if 'sprint' in spec:
+                                return 'sprinter'
+                            if 'time' in spec or 'chrono' in spec or 'tt' in spec:
+                                return 'tijdrijder'
+                            return 'allrounder'
+
+                        rows = [
+                            (
+                                (c.get('fullName') or '').strip(),
+                                (c.get('team') or {}).get('name') or '',
+                                _sporza_rol(c),
+                                float(c.get('price') or 0),
+                                int(c.get('totalBasePoints') or 0),
+                                sid,
+                            )
+                            for c in cyclists
+                            if (c.get('fullName') or '').strip()
+                        ]
+                        if rows:
+                            conn.executemany(
+                                "INSERT INTO renners "
+                                "(naam, ploeg, rol, prijs, totaal_punten, seizoen_id) "
+                                "VALUES (?,?,?,?,?,?)",
+                                rows,
+                            )
+                            conn.commit()
+                            sporza_renners_loaded = True
+                            app.logger.info(
+                                f"Seed seizoen {sid}: {len(rows)} renners opgehaald van "
+                                f"Sporza edition '{edition}'"
+                            )
+            except Exception as e:
+                app.logger.warning(f"Sporza cyclists API fout bij seed (edition={edition}): {e}")
+
+        if not sporza_renners_loaded:
+            # Fallback: statische lijst (voornamelijk mannelijke klassieke renners)
+            app.logger.warning(
+                f"Seed seizoen {sid}: Sporza API niet beschikbaar, gebruik statische fallback"
+            )
+            seed_renners(conn, sid)
+
+    # ── Koersen: altijd via statische lijst (geen Sporza-bron beschikbaar) ────
     seed_koersen(conn, sid)
+
     r_count = conn.execute("SELECT COUNT(*) FROM renners WHERE seizoen_id=?", (sid,)).fetchone()[0]
     k_count = conn.execute("SELECT COUNT(*) FROM koersen WHERE seizoen_id=?", (sid,)).fetchone()[0]
     conn.close()
-    return jsonify({'ok': True, 'renners': r_count, 'koersen': k_count})
+    return jsonify({
+        'ok': True,
+        'renners': r_count,
+        'koersen': k_count,
+        'bron': 'sporza_api' if sporza_renners_loaded else 'statische_lijst',
+    })
 
 
 @app.route('/sw.js')
