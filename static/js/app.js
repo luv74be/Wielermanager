@@ -362,26 +362,28 @@ function renderDashboard() {
     <div class="card mt-20">
       <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
         Wedstrijden
-        <span class="text-muted fs-sm fw-400">${koersen.filter(k=>k.afgelopen).length} afgelopen · ${koersen.filter(k=>!k.afgelopen).length} komend</span>
+        <span class="text-muted fs-sm fw-400">${koersen.filter(k=>!k.afgelopen).length} komend · ${koersen.filter(k=>k.afgelopen===2).length} doorgezet · ${koersen.filter(k=>k.afgelopen===1).length} afgelopen</span>
       </div>
       <div class="koers-blokken">
         ${koersen.map(k => {
-          const foto = k.afgelopen ? (k.winnaar_foto || k.kopman_foto) : k.kopman_foto;
-          const naam = k.afgelopen ? (k.winnaar_naam || k.kopman_naam) : k.kopman_naam;
+          const foto = k.afgelopen === 1 ? (k.winnaar_foto || k.kopman_foto) : k.kopman_foto;
+          const naam = k.afgelopen === 1 ? (k.winnaar_naam || k.kopman_naam) : k.kopman_naam;
           const avatarEl = foto
             ? `<img src="${foto}" title="${naam||''}" style="width:22px;height:22px;border-radius:50%;object-fit:cover;flex-shrink:0;margin-right:3px"/>`
             : '';
           return `
-          <div class="koers-blok ${k.soort}${k.afgelopen ? ' afgelopen' : ''}" onclick="openKoersDetail(${k.id})" title="${k.naam}">
-            <div class="koers-blok-datum">${fmtDate(k.datum)}</div>
+          <div class="koers-blok ${k.soort}${k.afgelopen === 1 ? ' afgelopen' : ''}" onclick="openKoersDetail(${k.id})" title="${k.naam}">
+            <div class="koers-blok-datum">${fmtDate(k.datum)}${k.afgelopen === 2 ? ' <span style="color:var(--accent);font-size:0.65rem">📤</span>' : k.afgelopen === 1 ? ' <span style="color:var(--muted);font-size:0.65rem">✓</span>' : ''}</div>
             <div class="koers-blok-naam">${k.naam}</div>
             <div class="koers-blok-ops">
               ${avatarEl}
-              ${k.afgelopen
+              ${k.afgelopen === 1
                 ? `<span class="koers-blok-done">✓</span><span style="font-size:0.78rem;font-weight:700;color:${k.mijn_punten > 0 ? 'var(--green)' : 'var(--muted)'}">${k.mijn_punten > 0 ? k.mijn_punten + ' pt' : '0 pt'}</span>`
-                : k.opstelling_aantal > 0
-                  ? `<span style="color:var(--green);font-size:0.72rem">👥 ${k.opstelling_aantal}/12</span>`
-                  : `<span style="color:var(--muted);font-size:0.72rem">👥 —</span>`}
+                : k.afgelopen === 2
+                  ? `<span style="color:var(--accent);font-size:0.72rem">📤 Doorgezet</span>`
+                  : k.opstelling_aantal > 0
+                    ? `<span style="color:var(--green);font-size:0.72rem">👥 ${k.opstelling_aantal}/12</span>`
+                    : `<span style="color:var(--muted);font-size:0.72rem">👥 —</span>`}
             </div>
           </div>`;
         }).join('')}
@@ -1184,8 +1186,8 @@ async function verwijderRenner(rid, naam) {
 // PAGE: Koersen
 // ═══════════════════════════════════════════════════════════════════════════
 function renderKoersen() {
-  const komend = state.koersen.filter(k => !k.afgelopen);
-  const afgelopen = state.koersen.filter(k => k.afgelopen);
+  const komend = state.koersen.filter(k => k.afgelopen !== 1);
+  const afgelopen = state.koersen.filter(k => k.afgelopen === 1);
 
   function koersTable(arr) {
     if (!arr.length) return '<div class="text-muted fs-sm mt-12">Geen wedstrijden</div>';
@@ -1205,10 +1207,11 @@ function renderKoersen() {
           <td onclick="event.stopPropagation()"><div class="flex gap-8">
             <button class="btn btn-sm btn-secondary btn-mob-hide" onclick="openOpstelling(${k.id},'${k.naam.replace(/'/g,"\\'")}')">👥 Opstelling</button>
             <button class="btn btn-sm btn-secondary btn-mob-hide" onclick="openResultaten(${k.id},'${k.naam.replace(/'/g,"\\'")}','${k.soort}')">📝 Resultaten</button>
-            ${k.afgelopen === 2
-              ? `<button class="btn btn-sm btn-secondary btn-mob-hide" onclick="markeerAfgelopen(${k.id})" title="Zet terug naar afgelopen">↩ Afgelopen</button>`
-              : k.afgelopen
-                ? `<button class="btn btn-sm btn-secondary btn-mob-hide" onclick="markeerActief(${k.id})" title="Zet terug als komende wedstrijd">↩ Heropen</button>`
+            ${k.afgelopen === 1
+              ? `<button class="btn btn-sm btn-secondary btn-mob-hide" onclick="markeerDoorgezet(${k.id})" title="Zet terug naar doorgezet">↩ Doorgezet</button>`
+              : k.afgelopen === 2
+                ? `<button class="btn btn-sm btn-success btn-mob-hide" onclick="markeerAfgelopen(${k.id})">✓ Afgelopen</button>
+                   <button class="btn btn-sm btn-secondary btn-mob-hide" onclick="markeerActief(${k.id})" title="Zet terug als komende wedstrijd">↩ Heropen</button>`
                 : `<button class="btn btn-sm btn-success btn-mob-hide" onclick="markeerAfgelopen(${k.id})">✓ Afgelopen</button>`}
             <button class="btn btn-sm btn-danger" onclick="verwijderKoers(${k.id},'${k.naam.replace(/'/g,"\\'")}')">✕</button>
           </div></td>
@@ -1221,7 +1224,7 @@ function renderKoersen() {
     <div class="page-header">
       <div>
         <div class="page-title">Wedstrijden</div>
-        <div class="page-subtitle">${komend.length} komend · ${afgelopen.filter(k=>k.afgelopen===1).length} afgelopen · ${afgelopen.filter(k=>k.afgelopen===2).length} doorgezet · ${state.koersen.length} totaal</div>
+        <div class="page-subtitle">${state.koersen.filter(k=>!k.afgelopen).length} komend · ${komend.filter(k=>k.afgelopen===2).length} doorgezet · ${afgelopen.length} afgelopen · ${state.koersen.length} totaal</div>
       </div>
       <button class="btn btn-primary" onclick="openNieuweKoers()">+ Wedstrijd Toevoegen</button>
     </div>
@@ -1378,6 +1381,14 @@ async function markeerActief(kid) {
   try {
     await put(`/api/koersen/${kid}`, { afgelopen: 0 });
     toast('Wedstrijd terug actief gezet', 'success');
+    await refreshKoersen();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function markeerDoorgezet(kid) {
+  try {
+    await put(`/api/koersen/${kid}`, { afgelopen: 2 });
+    toast('Wedstrijd terug naar doorgezet', 'success');
     await refreshKoersen();
   } catch(e) { toast(e.message, 'error'); }
 }
@@ -1558,7 +1569,7 @@ async function renderKoersDetail() {
   const [opstellingData, resultaten, besteOps, favorieten] = await Promise.all([
     get(`/api/koersen/${kid}/opstelling`),
     get(`/api/koersen/${kid}/resultaten`),
-    koers.afgelopen ? get(`/api/koersen/${kid}/beste-opstelling`) : Promise.resolve(null),
+    koers.afgelopen === 1 ? get(`/api/koersen/${kid}/beste-opstelling`) : Promise.resolve(null),
     get(`/api/koersen/${kid}/favorieten`).catch(() => []),
   ]);
 
@@ -1658,10 +1669,11 @@ async function renderKoersDetail() {
         <button class="btn btn-secondary btn-sm" onclick="openDeelnemers(${kid})">🔍 Deelnemers</button>
         ${koers.afgelopen !== 2 ? `<button class="btn btn-secondary btn-sm" onclick="openDoorzettenSporza(${kid})">🚀 Doorzetten</button>` : ''}
         <button class="btn btn-secondary btn-sm" onclick="openUitslagPCS(${kid})">📊 Uitslag</button>
-        ${koers.afgelopen === 2
-          ? `<button class="btn btn-secondary btn-sm" onclick="markeerAfgelopen(${kid})">↩ Afgelopen</button>`
-          : koers.afgelopen
-            ? `<button class="btn btn-secondary btn-sm" onclick="markeerActief(${kid})">↩ Heropen</button>`
+        ${koers.afgelopen === 1
+          ? `<button class="btn btn-secondary btn-sm" onclick="markeerDoorgezet(${kid})">↩ Doorgezet</button>`
+          : koers.afgelopen === 2
+            ? `<button class="btn btn-success btn-sm" onclick="markeerAfgelopen(${kid})">✓ Afgelopen</button>
+               <button class="btn btn-secondary btn-sm" onclick="markeerActief(${kid})">↩ Heropen</button>`
             : `<button class="btn btn-success btn-sm" onclick="markeerAfgelopen(${kid})">✓ Afgelopen</button>`}
         <button class="btn btn-danger btn-sm" onclick="verwijderKoers(${kid},'${koers.naam.replace(/'/g,"\\'")}')">✕ Verwijder</button>
       </div>
@@ -1688,7 +1700,7 @@ async function renderKoersDetail() {
           : `<div style="margin:0 0 10px;padding:8px 12px;background:rgba(239,68,68,0.08);border-radius:8px;font-size:0.82rem;color:var(--muted)">
               Nog geen kopman aangeduid
              </div>`}
-        ${koers.afgelopen
+        ${koers.afgelopen === 1
           ? '<div class="text-muted fs-sm" style="margin-bottom:10px">De opstelling is afgesloten.</div>'
           : `<div class="text-muted fs-sm" style="margin-bottom:10px">Selecteer max ${max} renners en duid één als kopman aan.</div>`}
         <div class="table-wrap" style="max-height:420px;overflow-y:auto">
@@ -1704,7 +1716,7 @@ async function renderKoersDetail() {
               ${renners.map(r => `<tr>
                 <td style="text-align:center">
                   <input type="checkbox" id="det-ops-${r.id}" ${r.in_opstelling ? 'checked' : ''}
-                    ${koers.afgelopen ? 'disabled' : `onchange="updateDetailOpstellingUI(${max})"`} />
+                    ${koers.afgelopen === 1 ? 'disabled' : `onchange="updateDetailOpstellingUI(${max})"`} />
                 </td>
                 <td style="padding-right:0">${avatarHtml(r)}</td>
                 <td class="fw-700" style="cursor:pointer" ondblclick="openRennerDetail(${r.id})">${r.naam}</td>
@@ -1712,13 +1724,13 @@ async function renderKoersDetail() {
                 <td style="text-align:center">
                   <input type="radio" name="det-kopman-radio" value="${r.id}"
                     ${r.is_kopman ? 'checked' : ''}
-                    ${koers.afgelopen || !r.in_opstelling ? 'disabled style="opacity:0.3"' : ''} />
+                    ${koers.afgelopen === 1 || !r.in_opstelling ? 'disabled style="opacity:0.3"' : ''} />
                 </td>
               </tr>`).join('')}
             </tbody>
           </table>
         </div>
-        ${!koers.afgelopen ? `
+        ${koers.afgelopen !== 1 ? `
           ${opstellingData.huidig_aantal === 0 ? `
             <button class="btn btn-secondary" style="width:100%;margin-bottom:8px"
               onclick="kopieerOpstelling(${kid})">
@@ -2394,7 +2406,7 @@ async function openTransfersOverzicht() {
 }
 
 function openPuntenOverzicht() {
-  const afgelopen = state.koersen.filter(k => k.afgelopen);
+  const afgelopen = state.koersen.filter(k => k.afgelopen === 1);
   const totaal = state.stats?.totaal_punten ?? 0;
 
   const blokkenHtml = afgelopen.length === 0
@@ -2848,7 +2860,7 @@ function renderStatistieken() {
   const chartData   = stats?.punten_per_koers  || [];
   const kopmanStats = stats?.kopman_stats       || [];
   const topRenners  = stats?.top_renners        || [];
-  const afgelopen   = koersen.filter(k => k.afgelopen);
+  const afgelopen   = koersen.filter(k => k.afgelopen === 1);
   const totaal      = stats?.totaal_punten ?? 0;
 
   // Gemiddelde punten per wedstrijd
@@ -3870,19 +3882,21 @@ async function renderRennerDetail() {
               ? `<span style="font-size:0.7rem;color:var(--accent)">⭐ Kopman</span>`
               : `<span style="font-size:0.7rem;color:var(--green)">👥 Opstelling</span>`;
             return `
-            <div class="koers-blok ${k.soort}${k.afgelopen ? ' afgelopen' : ''}"
+            <div class="koers-blok ${k.soort}${k.afgelopen === 1 ? ' afgelopen' : ''}"
                  onclick="openKoersDetail(${k.id})" title="${k.naam}">
               <div class="koers-blok-datum">${fmtDate(k.datum)}</div>
               <div class="koers-blok-naam">${k.naam}</div>
               <div class="koers-blok-ops" style="flex-direction:column;align-items:flex-end;gap:2px">
-                ${k.afgelopen
+                ${k.afgelopen === 1
                   ? `<span class="koers-blok-done">✓</span>
                      ${k.positie ? `<span style="font-size:0.7rem;color:var(--muted)">#${k.positie}</span>` : ''}
                      <span style="font-size:0.75rem;font-weight:700;color:${k.renner_punten > 0 ? 'var(--accent)' : 'var(--muted)'}">
                        ${k.renner_punten > 0 ? k.renner_punten + ' pt' : '—'}
                      </span>
                      ${k.team_punten > 0 ? `<span style="font-size:0.68rem;color:var(--muted)">👥 ${k.team_punten} pt</span>` : ''}`
-                  : opsStatus}
+                  : k.afgelopen === 2
+                    ? `<span style="color:var(--accent);font-size:0.72rem">📤 Doorgezet</span>`
+                    : opsStatus}
               </div>
             </div>`;
           }).join('')}
