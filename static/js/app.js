@@ -933,9 +933,9 @@ function renderRenners() {
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <button id="bulk-update-btn" class="btn btn-secondary"
           onclick="bulkUpdateRenners()"
-          style="${nSel === 0 ? 'display:none' : ''}"
-          title="Update foto, ploeg en prijs voor alle geselecteerde renners via Sporza WM">
-          🔄 Update (<span id="sel-count">${nSel}</span>)
+          ${nSel === 0 ? 'disabled' : ''}
+          title="${nSel === 0 ? 'Selecteer renners via de checkboxes om te updaten' : `Update foto, ploeg en prijs voor ${nSel} geselecteerde renner${nSel !== 1 ? 's' : ''} via Sporza WM`}">
+          🔄 Update${nSel > 0 ? ` (<span id="sel-count">${nSel}</span>)` : ' <span id="sel-count" style="display:none">0</span>'}
         </button>
         <button class="btn btn-primary" onclick="openNieuweRenner()">+ Renner Toevoegen</button>
       </div>
@@ -1035,8 +1035,15 @@ function toggleRennerSelectie(id) {
   const n = state.geselecteerdeRenners.size;
   const btn = document.getElementById('bulk-update-btn');
   const cnt = document.getElementById('sel-count');
-  if (btn) btn.style.display = n > 0 ? '' : 'none';
-  if (cnt) cnt.textContent = n;
+  if (btn) {
+    btn.disabled = n === 0;
+    btn.innerHTML = n > 0
+      ? `🔄 Update (<span id="sel-count">${n}</span>)`
+      : `🔄 Update <span id="sel-count" style="display:none">0</span>`;
+    btn.title = n === 0
+      ? 'Selecteer renners via de checkboxes om te updaten'
+      : `Update ${n} geselecteerde renner${n !== 1 ? 's' : ''} via Sporza WM`;
+  }
   // "Selecteer alles"-checkbox synchroniseren
   const f = state.rennerFilter;
   let visible = state.renners.filter(r =>
