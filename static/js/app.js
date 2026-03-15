@@ -1718,8 +1718,9 @@ async function renderKoersDetail() {
 
     <div class="${koers.afgelopen === 1 ? '' : 'grid-2'}">
 
-      <!-- ── Opstelling ───────────────────────────────────────── -->
-      ${koers.afgelopen === 1 ? '' : `<div class="card">`}
+      <!-- ── Opstelling (alleen bij Komend en Doorgezet) ──────── -->
+      ${koers.afgelopen !== 1 ? `
+      <div class="card">
         <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
           👥 Opstelling
           <span id="detail-ops-teller" style="font-size:0.85rem;font-weight:400;color:${opstellingData.huidig_aantal === max ? 'var(--green)' : 'var(--muted)'}">
@@ -1734,7 +1735,7 @@ async function renderKoersDetail() {
               Nog geen kopman aangeduid
              </div>`}
         ${koers.afgelopen
-          ? `<div class="text-muted fs-sm" style="margin-bottom:10px">De opstelling is afgesloten.${koers.afgelopen === 2 ? ' Zet terug naar Komend om te bewerken.' : ''}</div>`
+          ? `<div class="text-muted fs-sm" style="margin-bottom:10px">De opstelling is afgesloten. Zet terug naar Komend om te bewerken.</div>`
           : `<div class="text-muted fs-sm" style="margin-bottom:10px">Selecteer max ${max} renners en duid één als kopman aan.</div>`}
         <div class="table-wrap" style="max-height:420px;overflow-y:auto">
           <table>
@@ -1773,7 +1774,7 @@ async function renderKoersDetail() {
             onclick="slaDetailOpstellingOp(${kid},${max})">
             💾 Opstelling Opslaan
           </button>` : ''}
-      ${koers.afgelopen === 1 ? '' : '</div>'}
+      </div>` : ''}
 
       <!-- ── Resultaten ──────────────────────────────────────── -->
       <div class="card">
