@@ -1468,26 +1468,54 @@ async function openResultaten(kid, naam, soort) {
     </div>
 
     <div id="tab-bekijk">
-      ${resultaten.length === 0
-        ? '<div class="empty-state"><div class="empty-icon">📋</div><div class="empty-title">Nog geen resultaten</div></div>'
-        : `<div class="table-wrap" style="max-height:400px;overflow-y:auto"><table>
+      ${(() => {
+          const koers = state.koersen.find(k => k.id === kid);
+          const winnaarNaam = koers?.winnaar_naam;
+          const winnaarFoto = koers?.winnaar_foto;
+          const winnaarInPloeg = winnaarNaam
+            ? resultaten.find(r => r.positie === 1 && r.in_mijn_ploeg)
+            : null;
+          const winnaarExtern = winnaarNaam && !winnaarInPloeg;
+          const winnaarRij = winnaarExtern ? `
+            <tr style="background:rgba(232,185,79,0.07);border-left:3px solid var(--gold,#e8b94f)">
+              <td class="fw-700" style="color:var(--gold,#e8b94f)">1</td>
+              <td style="width:32px;padding-right:0">${winnaarFoto
+                ? `<img src="${winnaarFoto}" style="width:28px;height:28px;border-radius:50%;object-fit:cover">`
+                : '<span style="font-size:1.1rem">🏆</span>'}</td>
+              <td class="fw-700" style="color:var(--gold,#e8b94f)">
+                🏆 ${winnaarNaam}
+                <span class="text-muted fs-sm" style="font-weight:400;margin-left:4px">(niet in ploeg)</span>
+              </td>
+              <td class="text-muted">—</td><td class="text-muted">—</td><td class="text-muted">—</td>
+              <td class="text-muted fw-700">0</td>
+            </tr>` : '';
+
+          if (resultaten.length === 0 && !winnaarNaam)
+            return '<div class="empty-state"><div class="empty-icon">📋</div><div class="empty-title">Nog geen resultaten</div></div>';
+
+          return `<div class="table-wrap" style="max-height:400px;overflow-y:auto"><table>
             <thead><tr><th>Pos</th><th></th><th>Naam</th><th>Basis</th><th>Kopman+</th><th>Ploegmaat+</th><th>Totaal</th></tr></thead>
             <tbody>
-              ${resultaten.map(r => `<tr ${!r.in_opstelling && r.in_mijn_ploeg ? 'style="opacity:0.45"' : ''}>
-                <td class="text-muted">${r.positie ?? '—'}</td>
-                <td style="width:32px;padding-right:0">${avatarHtml(r)}</td>
-                <td class="fw-700" ${r.in_mijn_ploeg ? `style="cursor:pointer" ondblclick="openRennerDetail(${r.renner_id})"` : ''}>${r.naam}
-                  ${r.in_opstelling ? '<span class="in-ploeg-dot"></span>' : ''}
-                  ${r.is_kopman ? ' ⭐' : ''}
-                  ${r.in_mijn_ploeg && !r.in_opstelling ? ' <span class="text-muted fs-sm">(bus)</span>' : ''}
-                </td>
-                <td>${r.punten - r.bonuspunten_kopman - r.bonuspunten_ploegmaat}</td>
-                <td>${r.bonuspunten_kopman > 0 ? `<span class="text-accent">+${r.bonuspunten_kopman}</span>` : '—'}</td>
-                <td>${r.bonuspunten_ploegmaat > 0 ? `<span class="text-green">+${r.bonuspunten_ploegmaat}</span>` : '—'}</td>
-                <td class="fw-700 ${r.punten > 0 ? 'text-green' : 'text-muted'}">${r.punten}</td>
-              </tr>`).join('')}
+              ${winnaarRij}
+              ${resultaten.map(r => {
+                const isEchteWinnaar = winnaarNaam && r.positie === 1 && !winnaarExtern && winnaarInPloeg?.renner_id === r.renner_id;
+                return `<tr ${!r.in_opstelling && r.in_mijn_ploeg ? 'style="opacity:0.45"' : ''}>
+                  <td class="text-muted">${isEchteWinnaar ? '🏆' : (r.positie ?? '—')}</td>
+                  <td style="width:32px;padding-right:0">${avatarHtml(r)}</td>
+                  <td class="fw-700" ${r.in_mijn_ploeg ? `style="cursor:pointer" ondblclick="openRennerDetail(${r.renner_id})"` : ''}>${r.naam}
+                    ${r.in_opstelling ? '<span class="in-ploeg-dot"></span>' : ''}
+                    ${r.is_kopman ? ' ⭐' : ''}
+                    ${r.in_mijn_ploeg && !r.in_opstelling ? ' <span class="text-muted fs-sm">(bus)</span>' : ''}
+                  </td>
+                  <td>${r.punten - r.bonuspunten_kopman - r.bonuspunten_ploegmaat}</td>
+                  <td>${r.bonuspunten_kopman > 0 ? `<span class="text-accent">+${r.bonuspunten_kopman}</span>` : '—'}</td>
+                  <td>${r.bonuspunten_ploegmaat > 0 ? `<span class="text-green">+${r.bonuspunten_ploegmaat}</span>` : '—'}</td>
+                  <td class="fw-700 ${r.punten > 0 ? 'text-green' : 'text-muted'}">${r.punten}</td>
+                </tr>`;
+              }).join('')}
             </tbody>
-          </table></div>`}
+          </table></div>`;
+        })()}
     </div>
 
     <div id="tab-invoer" style="display:none">
@@ -1662,6 +1690,12 @@ async function renderKoersDetail() {
             ${koers.afgelopen && totaalPuntenKoers > 0
               ? `&nbsp;·&nbsp; <span class="badge" style="background:rgba(74,222,128,0.15);color:var(--green);font-weight:700">🏆 ${totaalPuntenKoers} pt</span>`
               : ''}
+            ${koers.winnaar_naam
+              ? `&nbsp;·&nbsp; <span style="display:inline-flex;align-items:center;gap:6px">
+                  ${koers.winnaar_foto ? `<img src="${koers.winnaar_foto}" style="width:20px;height:20px;border-radius:50%;object-fit:cover">` : ''}
+                  <span style="font-size:0.85rem">🏆 <strong>${koers.winnaar_naam}</strong></span>
+                </span>`
+              : ''}
           </div>
         </div>
       </div>
@@ -1751,26 +1785,52 @@ async function renderKoersDetail() {
         </div>
 
         <div id="det-tab-bekijk">
-          ${resultaten.length === 0
+          ${resultaten.length === 0 && !koers.winnaar_naam
             ? '<div class="empty-state"><div class="empty-icon">📋</div><div class="empty-title">Nog geen resultaten</div></div>'
-            : `<div class="table-wrap" style="max-height:480px;overflow-y:auto"><table>
-                <thead><tr><th>Pos</th><th></th><th>Naam</th><th>Basis</th><th>Kop+</th><th>Ploeg+</th><th>Totaal</th></tr></thead>
-                <tbody>
-                  ${resultaten.map(r => `<tr ${!r.in_opstelling && r.in_mijn_ploeg ? 'style="opacity:0.45"' : ''}>
-                    <td class="text-muted">${r.positie ?? '—'}</td>
-                    <td style="width:32px;padding-right:0">${avatarHtml(r)}</td>
-                    <td class="fw-700" ${r.in_mijn_ploeg ? `style="cursor:pointer" ondblclick="openRennerDetail(${r.renner_id})"` : ''}>${r.naam}
-                      ${r.in_opstelling ? '<span class="in-ploeg-dot"></span>' : ''}
-                      ${r.is_kopman ? ' ⭐' : ''}
-                      ${r.in_mijn_ploeg && !r.in_opstelling ? ' <span class="text-muted fs-sm">(bus)</span>' : ''}
+            : (() => {
+                // Echte winnaar: is die al in de resultaten-lijst (als ploegrenner)?
+                const winnaarInPloeg = koers.winnaar_naam
+                  ? resultaten.find(r => r.naam === koers.winnaar_naam || (r.positie === 1 && r.in_mijn_ploeg))
+                  : null;
+                const winnaarExtern = koers.winnaar_naam && !winnaarInPloeg;
+
+                const winnaarRij = winnaarExtern ? `
+                  <tr style="background:rgba(232,185,79,0.07);border-left:3px solid var(--gold,#e8b94f)">
+                    <td class="fw-700" style="color:var(--gold,#e8b94f)">1</td>
+                    <td style="width:32px;padding-right:0">${koers.winnaar_foto
+                      ? `<img src="${koers.winnaar_foto}" style="width:28px;height:28px;border-radius:50%;object-fit:cover">`
+                      : '<span style="font-size:1.1rem">🏆</span>'}</td>
+                    <td class="fw-700" style="color:var(--gold,#e8b94f)">
+                      🏆 ${koers.winnaar_naam}
+                      <span class="text-muted fs-sm" style="font-weight:400;margin-left:4px">(niet in ploeg)</span>
                     </td>
-                    <td>${r.punten - r.bonuspunten_kopman - r.bonuspunten_ploegmaat}</td>
-                    <td>${r.bonuspunten_kopman > 0 ? `<span class="text-accent">+${r.bonuspunten_kopman}</span>` : '—'}</td>
-                    <td>${r.bonuspunten_ploegmaat > 0 ? `<span class="text-green">+${r.bonuspunten_ploegmaat}</span>` : '—'}</td>
-                    <td class="fw-700 ${r.punten > 0 ? 'text-green' : 'text-muted'}">${r.punten}</td>
-                  </tr>`).join('')}
-                </tbody>
-              </table></div>`}
+                    <td class="text-muted">—</td><td class="text-muted">—</td><td class="text-muted">—</td>
+                    <td class="text-muted fw-700">0</td>
+                  </tr>` : '';
+
+                return `<div class="table-wrap" style="max-height:480px;overflow-y:auto"><table>
+                  <thead><tr><th>Pos</th><th></th><th>Naam</th><th>Basis</th><th>Kop+</th><th>Ploeg+</th><th>Totaal</th></tr></thead>
+                  <tbody>
+                    ${winnaarRij}
+                    ${resultaten.map(r => {
+                      const isEchteWinnaar = koers.winnaar_naam && r.positie === 1 && !winnaarExtern && winnaarInPloeg?.renner_id === r.renner_id;
+                      return `<tr ${!r.in_opstelling && r.in_mijn_ploeg ? 'style="opacity:0.45"' : ''}>
+                        <td class="text-muted">${isEchteWinnaar ? '🏆' : (r.positie ?? '—')}</td>
+                        <td style="width:32px;padding-right:0">${avatarHtml(r)}</td>
+                        <td class="fw-700" ${r.in_mijn_ploeg ? `style="cursor:pointer" ondblclick="openRennerDetail(${r.renner_id})"` : ''}>${r.naam}
+                          ${r.in_opstelling ? '<span class="in-ploeg-dot"></span>' : ''}
+                          ${r.is_kopman ? ' ⭐' : ''}
+                          ${r.in_mijn_ploeg && !r.in_opstelling ? ' <span class="text-muted fs-sm">(bus)</span>' : ''}
+                        </td>
+                        <td>${r.punten - r.bonuspunten_kopman - r.bonuspunten_ploegmaat}</td>
+                        <td>${r.bonuspunten_kopman > 0 ? `<span class="text-accent">+${r.bonuspunten_kopman}</span>` : '—'}</td>
+                        <td>${r.bonuspunten_ploegmaat > 0 ? `<span class="text-green">+${r.bonuspunten_ploegmaat}</span>` : '—'}</td>
+                        <td class="fw-700 ${r.punten > 0 ? 'text-green' : 'text-muted'}">${r.punten}</td>
+                      </tr>`;
+                    }).join('')}
+                  </tbody>
+                </table></div>`;
+              })()}
         </div>
 
         <div id="det-tab-invoer" style="display:none">
