@@ -75,8 +75,9 @@ const PAGE_LABELS = {
   'ai-chat':            'AI Assistent',
   'mini-competitie':    'Minicompetitie',
   instellingen:         'Instellingen',
-  'admin-gebruikers':   'Gebruikers',
-  'admin-seizoenen':    'Seizoenen',
+  'admin-gebruikers':    'Gebruikers',
+  'admin-seizoenen':     'Seizoenen',
+  'admin-budget-debug':  'Budget Fix',
 };
 
 function getPageLabel(page) {
@@ -192,6 +193,7 @@ function updateSidebarUser() {
   const el = document.getElementById('sidebar-user');
   const adminEl = document.getElementById('nav-admin');
   const seizoenenEl = document.getElementById('nav-seizoenen');
+  const budgetDebugEl = document.getElementById('nav-budget-debug');
   const seizoenBox = document.getElementById('sidebar-seizoen');
   const seizoenNaamEl = document.getElementById('seizoen-naam');
   if (!el) return;
@@ -204,10 +206,12 @@ function updateSidebarUser() {
     `;
     if (adminEl) adminEl.style.display = user.is_admin ? '' : 'none';
     if (seizoenenEl) seizoenenEl.style.display = user.is_admin ? '' : 'none';
+    if (budgetDebugEl) budgetDebugEl.style.display = user.is_admin ? '' : 'none';
   } else {
     el.innerHTML = '';
     if (adminEl) adminEl.style.display = 'none';
     if (seizoenenEl) seizoenenEl.style.display = 'none';
+    if (budgetDebugEl) budgetDebugEl.style.display = 'none';
   }
 
   // Seizoen-switcher vullen
@@ -4619,6 +4623,94 @@ function adminEditSeizoen(sid, naam, edition, actief) {
   });
 }
 
+async function renderAdminBudgetDebug() {
+  if (!state.currentUser?.is_admin) return `<div class="card"><p>Geen toegang.</p></div>`;
+
+  let ploegen = [];
+  try { ploegen = await get('/api/admin/ploeg/budget-debug'); } catch(e) {
+    return `<div class="card"><p>Fout: ${e.message}</p></div>`;
+  }
+
+  const kaarten = ploegen.map(p => {
+    const rijen = p.renners.map(r => {
+      const diff = r.verschil;
+      const diffStr = diff === 0 ? '' : `<span style="color:${diff>0?'#e74c3c':'#27ae60'};font-size:0.8em"> (${diff>0?'+':''}${diff.toFixed(2)}M)</span>`;
+      return `
+        <tr>
+          <td>${r.naam}</td>
+          <td>€${r.aangeschaft_prijs.toFixed(2)}M</td>
+          <td>€${r.huidige_prijs.toFixed(2)}M${diffStr}</td>
+          <td>
+            <button class="btn btn-small btn-secondary" onclick="adminEditAangeschaftPrijs(${p.user_id},${p.seizoen_id},${r.renner_id},${r.aangeschaft_prijs},'${r.naam.replace(/'/g,"\\'")}')">✏️</button>
+          </td>
+        </tr>`;
+    }).join('');
+
+    const budgetRest = p.budget_rest;
+    const restKleur = budgetRest >= 0 ? '#27ae60' : '#e74c3c';
+    return `
+      <div class="card" style="margin-bottom:1rem">
+        <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+          <strong>${Object.keys({}).length > 0 ? '' : ''}👤 ${p.user_id} / ${p.seizoen_id}</strong>
+          <span>Budget: €${p.budget}M | Aangeschaft: €${p.totaal_aangeschaft}M |
+            Resterend: <strong style="color:${restKleur}">€${budgetRest.toFixed(2)}M</strong></span>
+          <button class="btn btn-primary btn-small" onclick="adminNormalizeBudget(${p.user_id},${p.seizoen_id})">
+            ⚖️ Normaliseer naar €${p.budget}M
+          </button>
+        </div>
+        <table class="data-table" style="margin-top:0.5rem">
+          <thead><tr><th>Renner</th><th>Aangeschaft prijs</th><th>Huidige prijs</th><th></th></tr></thead>
+          <tbody>${rijen}</tbody>
+          <tfoot>
+            <tr style="font-weight:bold">
+              <td>Totaal</td>
+              <td>€${p.totaal_aangeschaft.toFixed(2)}M</td>
+              <td>€${p.totaal_huidig.toFixed(2)}M</td>
+              <td></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>`;
+  }).join('') || '<div class="card"><p>Geen ploegen gevonden.</p></div>';
+
+  return `
+    <div class="card-header"><h2>⚖️ Budget Diagnose & Fix</h2></div>
+    <p style="margin-bottom:1rem;color:var(--text-muted)">
+      Vergelijk de aankoopprijs (ingevroren bij aankoop) met de huidige marktprijs per renner.
+      Gebruik ⚖️ Normaliseer om de aankoopprijzen proportioneel te schalen zodat het team
+      exact past in het budget.
+    </p>
+    ${kaarten}`;
+}
+
+async function adminNormalizeBudget(userId, seizoenId) {
+  if (!confirm(`Aankoopprijzen proportioneel schalen zodat het team exact past in het budget?`)) return;
+  try {
+    const res = await post('/api/admin/ploeg/normalize-budget', { user_id: userId, seizoen_id: seizoenId });
+    if (res.ok && res.resultaten?.length) {
+      const r = res.resultaten[0];
+      toast(`✅ Genormaliseerd: ${r.n_renners} renners geschaald van €${r.oud_totaal}M → €${r.nieuw_totaal}M`, 'success');
+    } else {
+      toast('Geen wijzigingen gedaan.', 'warning');
+    }
+    await renderPage();
+  } catch(e) { toast('Fout: ' + e.message, 'error'); }
+}
+
+async function adminEditAangeschaftPrijs(userId, seizoenId, rennerId, huidigePrijs, naam) {
+  const input = prompt(`Aankoopprijs (M€) voor ${naam}:`, huidigePrijs.toFixed(2));
+  if (input === null) return;
+  const prijs = parseFloat(input);
+  if (isNaN(prijs) || prijs < 0) { toast('Ongeldige prijs', 'error'); return; }
+  try {
+    await post('/api/admin/ploeg/set-aangeschaft-prijs', {
+      user_id: userId, seizoen_id: seizoenId, renner_id: rennerId, prijs
+    });
+    toast(`✅ Aankoopprijs ${naam} → €${prijs.toFixed(2)}M`, 'success');
+    await renderPage();
+  } catch(e) { toast('Fout: ' + e.message, 'error'); }
+}
+
 async function adminResetPassword(uid, username) {
   const newPw = prompt(`Nieuw wachtwoord voor "${username}":`);
   if (!newPw || !newPw.trim()) return;
@@ -4656,8 +4748,9 @@ async function renderPage() {
       case 'ai-chat':          html = renderAiChat(); break;
       case 'mini-competitie':  html = await renderMiniCompetitie(); break;
       case 'instellingen':       html = await renderInstellingen(); break;
-      case 'admin-gebruikers':  html = await renderAdminGebruikers(); break;
-      case 'admin-seizoenen':   html = await renderAdminSeizoen(); break;
+      case 'admin-gebruikers':    html = await renderAdminGebruikers(); break;
+      case 'admin-seizoenen':     html = await renderAdminSeizoen(); break;
+      case 'admin-budget-debug':  html = await renderAdminBudgetDebug(); break;
       default: html = renderDashboard();
     }
     app.innerHTML = renderBreadcrumb() + html;

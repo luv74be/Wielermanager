@@ -833,6 +833,154 @@ def admin_sync_renners_sporza():
     })
 
 
+@app.route('/api/admin/ploeg/budget-debug', methods=['GET'])
+def admin_ploeg_budget_debug():
+    """Toon voor alle users/seizoenen de renners in hun ploeg met aangeschaft_prijs vs huidige prijs."""
+    err, code = _require_admin()
+    if err: return err, code
+
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT
+            u.username,
+            sz.naam  AS seizoen,
+            r.naam   AS renner,
+            r.prijs  AS huidige_prijs,
+            COALESCE(m.aangeschaft_prijs, r.prijs) AS aangeschaft_prijs,
+            m.user_id, m.seizoen_id, m.renner_id
+        FROM mijn_ploeg m
+        JOIN renners r  ON r.id  = m.renner_id
+        JOIN users u    ON u.id  = m.user_id
+        JOIN seizoenen sz ON sz.id = m.seizoen_id
+        ORDER BY u.username, sz.naam, r.prijs DESC
+    """).fetchall()
+
+    # Groepeer per user+seizoen
+    uit = {}
+    for row in rows:
+        key = f"{row['username']} — {row['seizoen']}"
+        uid = row['user_id']
+        sid = row['seizoen_id']
+        inst = _get_inst(conn, uid, sid=sid)
+        budget = float(inst.get('budget', 120))
+        if key not in uit:
+            uit[key] = {
+                'user_id': uid,
+                'seizoen_id': sid,
+                'budget': budget,
+                'renners': [],
+                'totaal_aangeschaft': 0.0,
+                'totaal_huidig': 0.0,
+            }
+        uit[key]['renners'].append({
+            'renner_id': row['renner_id'],
+            'naam': row['renner'],
+            'huidige_prijs': row['huidige_prijs'],
+            'aangeschaft_prijs': row['aangeschaft_prijs'],
+            'verschil': round(row['huidige_prijs'] - row['aangeschaft_prijs'], 2),
+        })
+        uit[key]['totaal_aangeschaft'] += row['aangeschaft_prijs']
+        uit[key]['totaal_huidig']      += row['huidige_prijs']
+
+    for k in uit:
+        uit[k]['totaal_aangeschaft'] = round(uit[k]['totaal_aangeschaft'], 2)
+        uit[k]['totaal_huidig']      = round(uit[k]['totaal_huidig'], 2)
+        uit[k]['budget_rest']        = round(uit[k]['budget'] - uit[k]['totaal_aangeschaft'], 2)
+
+    conn.close()
+    return jsonify(list(uit.values()))
+
+
+@app.route('/api/admin/ploeg/normalize-budget', methods=['POST'])
+def admin_ploeg_normalize_budget():
+    """Schaal aangeschaft_prijs proportioneel zodat de ploegkost gelijk is aan het budget.
+
+    Body: { "user_id": <int>, "seizoen_id": <int> }
+    Als user_id ontbreekt → alle users van dat seizoen.
+    """
+    err, code = _require_admin()
+    if err: return err, code
+
+    data = request.get_json(silent=True) or {}
+    conn = get_db()
+    sid = int(data.get('seizoen_id') or current_seizoen_id(conn))
+    uid_filter = data.get('user_id')
+
+    # Haal users op die een ploeg hebben in dit seizoen
+    if uid_filter:
+        users = [uid_filter]
+    else:
+        users = [r['user_id'] for r in conn.execute(
+            "SELECT DISTINCT user_id FROM mijn_ploeg WHERE seizoen_id=?", (sid,)
+        ).fetchall()]
+
+    resultaten = []
+    for uid in users:
+        inst = _get_inst(conn, uid, sid=sid)
+        budget = float(inst.get('budget', 120))
+
+        ploeg = conn.execute("""
+            SELECT m.renner_id, COALESCE(m.aangeschaft_prijs, r.prijs) AS aangeschaft_prijs
+            FROM mijn_ploeg m JOIN renners r ON r.id = m.renner_id
+            WHERE m.user_id=? AND m.seizoen_id=?
+        """, (uid, sid)).fetchall()
+
+        if not ploeg:
+            continue
+
+        totaal = sum(r['aangeschaft_prijs'] for r in ploeg)
+        if totaal == 0:
+            continue
+
+        factor = budget / totaal
+        for r in ploeg:
+            nieuwe_prijs = round(r['aangeschaft_prijs'] * factor, 2)
+            conn.execute(
+                "UPDATE mijn_ploeg SET aangeschaft_prijs=? WHERE renner_id=? AND user_id=? AND seizoen_id=?",
+                (nieuwe_prijs, r['renner_id'], uid, sid)
+            )
+
+        conn.commit()
+        resultaten.append({
+            'user_id': uid,
+            'oud_totaal': round(totaal, 2),
+            'nieuw_totaal': budget,
+            'factor': round(factor, 4),
+            'n_renners': len(ploeg),
+        })
+
+    conn.close()
+    return jsonify({'ok': True, 'resultaten': resultaten})
+
+
+@app.route('/api/admin/ploeg/set-aangeschaft-prijs', methods=['POST'])
+def admin_set_aangeschaft_prijs():
+    """Stel aangeschaft_prijs in voor één renner in een ploeg.
+
+    Body: { "user_id": <int>, "seizoen_id": <int>, "renner_id": <int>, "prijs": <float> }
+    """
+    err, code = _require_admin()
+    if err: return err, code
+
+    data = request.get_json(silent=True) or {}
+    uid = data.get('user_id')
+    sid = data.get('seizoen_id')
+    rid = data.get('renner_id')
+    prijs = data.get('prijs')
+
+    if None in (uid, sid, rid, prijs):
+        return jsonify({'error': 'user_id, seizoen_id, renner_id en prijs zijn verplicht'}), 400
+
+    conn = get_db()
+    conn.execute(
+        "UPDATE mijn_ploeg SET aangeschaft_prijs=? WHERE renner_id=? AND user_id=? AND seizoen_id=?",
+        (float(prijs), int(rid), int(uid), int(sid))
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
+
+
 @app.route('/sw.js')
 def service_worker():
     """Serveer de service worker vanuit de root zodat de scope '/' is."""
