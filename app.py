@@ -1684,14 +1684,15 @@ def get_mijn_ploeg():
 
     ploeg = conn.execute("""
         SELECT r.id, r.naam, r.ploeg as renner_ploeg, r.rol, r.prijs, r.totaal_punten,
-               r.foto, r.geblesseerd, m.aangeschaft_op
+               r.foto, r.geblesseerd, m.aangeschaft_op,
+               COALESCE(m.aangeschaft_prijs, r.prijs) as aangeschaft_prijs
         FROM mijn_ploeg m
         JOIN renners r ON r.id = m.renner_id
         WHERE m.user_id = ? AND m.seizoen_id = ?
-        ORDER BY r.prijs DESC, r.totaal_punten DESC
+        ORDER BY COALESCE(m.aangeschaft_prijs, r.prijs) DESC, r.totaal_punten DESC
     """, (uid, sid)).fetchall()
 
-    uitgegeven = sum(r["prijs"] for r in ploeg)
+    uitgegeven = sum(r["aangeschaft_prijs"] for r in ploeg)
     resterend = round(budget - uitgegeven, 2)
 
     conn.close()
@@ -1765,7 +1766,8 @@ def add_to_ploeg():
     max_per_ploeg = int(inst.get("max_per_ploeg", 4))
 
     ploeg = conn.execute("""
-        SELECT r.prijs, r.ploeg FROM mijn_ploeg m JOIN renners r ON r.id=m.renner_id
+        SELECT COALESCE(m.aangeschaft_prijs, r.prijs) as aangeschaft_prijs, r.ploeg
+        FROM mijn_ploeg m JOIN renners r ON r.id=m.renner_id
         WHERE m.user_id=? AND m.seizoen_id=?
     """, (uid, sid)).fetchall()
 
@@ -1783,13 +1785,16 @@ def add_to_ploeg():
         conn.close()
         return jsonify({"error": f"Max {max_per_ploeg} renners van {renner['ploeg']} al in ploeg"}), 400
 
-    uitgegeven = sum(r["prijs"] for r in ploeg)
+    uitgegeven = sum(r["aangeschaft_prijs"] for r in ploeg)
     if uitgegeven + renner["prijs"] > budget:
         conn.close()
         return jsonify({"error": f"Onvoldoende budget (€{budget - uitgegeven:.1f}M beschikbaar)"}), 400
 
     try:
-        conn.execute("INSERT INTO mijn_ploeg (renner_id, user_id, seizoen_id) VALUES (?,?,?)", (rid, uid, sid))
+        conn.execute(
+            "INSERT INTO mijn_ploeg (renner_id, user_id, seizoen_id, aangeschaft_prijs) VALUES (?,?,?,?)",
+            (rid, uid, sid, renner["prijs"])
+        )
         conn.commit()
     except Exception:
         conn.close()
@@ -1825,10 +1830,11 @@ def get_transfer_kosten():
     kosten = transfer_kosten(volgende, gratis)
     budget_rest = float(inst.get("budget", 120))
     ploeg = conn.execute(
-        "SELECT r.prijs FROM mijn_ploeg m JOIN renners r ON r.id=m.renner_id WHERE m.user_id=? AND m.seizoen_id=?",
+        "SELECT COALESCE(m.aangeschaft_prijs, r.prijs) as aangeschaft_prijs "
+        "FROM mijn_ploeg m JOIN renners r ON r.id=m.renner_id WHERE m.user_id=? AND m.seizoen_id=?",
         (uid, sid)
     ).fetchall()
-    uitgegeven = sum(r["prijs"] for r in ploeg)
+    uitgegeven = sum(r["aangeschaft_prijs"] for r in ploeg)
     budget_rest = round(budget_rest - uitgegeven, 2)
     conn.close()
     return jsonify({
@@ -1857,7 +1863,9 @@ def do_transfer():
     kosten = transfer_kosten(volgende, gratis)
 
     ploeg_rest = conn.execute(
-        "SELECT r.prijs, r.ploeg FROM mijn_ploeg m JOIN renners r ON r.id=m.renner_id WHERE m.user_id=? AND m.seizoen_id=? AND m.renner_id!=?",
+        "SELECT COALESCE(m.aangeschaft_prijs, r.prijs) as aangeschaft_prijs, r.ploeg "
+        "FROM mijn_ploeg m JOIN renners r ON r.id=m.renner_id "
+        "WHERE m.user_id=? AND m.seizoen_id=? AND m.renner_id!=?",
         (uid, sid, rid_uit)
     ).fetchall()
 
@@ -1872,22 +1880,23 @@ def do_transfer():
         conn.close()
         return jsonify({"error": f"Max {max_per_ploeg} renners van {renner_in['ploeg']} al in ploeg"}), 400
 
-    uitgegeven = sum(r["prijs"] for r in ploeg_rest)
+    uitgegeven = sum(r["aangeschaft_prijs"] for r in ploeg_rest)
     totaal_nodig = uitgegeven + renner_in["prijs"] + kosten
     if totaal_nodig > budget:
         conn.close()
         return jsonify({"error": f"Onvoldoende budget (transfer kost €{kosten}M + rennerprijs €{renner_in['prijs']}M)"}), 400
 
     conn.execute("DELETE FROM mijn_ploeg WHERE renner_id=? AND user_id=? AND seizoen_id=?", (rid_uit, uid, sid))
-    conn.execute("INSERT OR REPLACE INTO mijn_ploeg (renner_id, user_id, seizoen_id) VALUES (?,?,?)", (rid_in, uid, sid))
+    conn.execute(
+        "INSERT OR REPLACE INTO mijn_ploeg (renner_id, user_id, seizoen_id, aangeschaft_prijs) VALUES (?,?,?,?)",
+        (rid_in, uid, sid, renner_in["prijs"])
+    )
     conn.execute(
         "INSERT INTO transfers (renner_uit_id, renner_in_id, kosten, user_id, seizoen_id) VALUES (?,?,?,?,?)",
         (rid_uit, rid_in, kosten, uid, sid)
     )
     new_budget = round(budget - kosten, 2)
     _set_user_inst_val(conn, 'transfer_count', str(volgende), uid=uid, sid=sid)
-    # Budget enkel opslaan als er effectieve kosten zijn; gratis transfers
-    # mogen de fallback-keten niet kortcircuiten (zou upgrades blokkeren).
     if kosten > 0:
         _set_user_inst_val(conn, 'budget', str(new_budget), uid=uid, sid=sid)
     conn.commit()
@@ -1990,7 +1999,9 @@ def uitvoeren_gepland_transfer(gtid):
     kosten = transfer_kosten(volgende, gratis)
 
     ploeg_rest = conn.execute(
-        "SELECT r.prijs, r.ploeg FROM mijn_ploeg m JOIN renners r ON r.id=m.renner_id WHERE m.user_id=? AND m.seizoen_id=? AND m.renner_id!=?",
+        "SELECT COALESCE(m.aangeschaft_prijs, r.prijs) as aangeschaft_prijs, r.ploeg "
+        "FROM mijn_ploeg m JOIN renners r ON r.id=m.renner_id "
+        "WHERE m.user_id=? AND m.seizoen_id=? AND m.renner_id!=?",
         (uid, sid, rid_uit)
     ).fetchall()
 
@@ -2010,7 +2021,7 @@ def uitvoeren_gepland_transfer(gtid):
         conn.close()
         return jsonify({"error": f"Max {max_per_ploeg} renners van {renner_in['ploeg']} al in ploeg"}), 400
 
-    uitgegeven = sum(r["prijs"] for r in ploeg_rest)
+    uitgegeven = sum(r["aangeschaft_prijs"] for r in ploeg_rest)
     totaal_nodig = uitgegeven + renner_in["prijs"] + kosten
     if totaal_nodig > budget:
         conn.close()
@@ -2018,13 +2029,17 @@ def uitvoeren_gepland_transfer(gtid):
 
     new_budget = round(budget - kosten, 2)
     conn.execute("DELETE FROM mijn_ploeg WHERE renner_id=? AND user_id=? AND seizoen_id=?", (rid_uit, uid, sid))
-    conn.execute("INSERT OR REPLACE INTO mijn_ploeg (renner_id, user_id, seizoen_id) VALUES (?,?,?)", (rid_in, uid, sid))
+    conn.execute(
+        "INSERT OR REPLACE INTO mijn_ploeg (renner_id, user_id, seizoen_id, aangeschaft_prijs) VALUES (?,?,?,?)",
+        (rid_in, uid, sid, renner_in["prijs"])
+    )
     conn.execute(
         "INSERT INTO transfers (renner_uit_id, renner_in_id, kosten, user_id, seizoen_id) VALUES (?,?,?,?,?)",
         (rid_uit, rid_in, kosten, uid, sid)
     )
     _set_user_inst_val(conn, 'transfer_count', str(volgende), uid=uid, sid=sid)
-    _set_user_inst_val(conn, 'budget', str(new_budget), uid=uid, sid=sid)
+    if kosten > 0:
+        _set_user_inst_val(conn, 'budget', str(new_budget), uid=uid, sid=sid)
     conn.execute("DELETE FROM geplande_transfers WHERE id=?", (gtid,))
     conn.commit()
     conn.close()
@@ -3243,7 +3258,8 @@ def sporza_mini_transfer_tips():
 
     # Eigen ploeg uit DB
     eigen_ploeg = conn.execute("""
-        SELECT r.id, r.naam, r.prijs, r.totaal_punten
+        SELECT r.id, r.naam, r.prijs, r.totaal_punten,
+               COALESCE(m.aangeschaft_prijs, r.prijs) as aangeschaft_prijs
         FROM mijn_ploeg m JOIN renners r ON r.id = m.renner_id
         WHERE m.user_id = ? AND m.seizoen_id = ?
     """, (uid, sid)).fetchall()
@@ -3253,7 +3269,7 @@ def sporza_mini_transfer_tips():
     # Budget resterend berekenen
     inst = _get_inst(conn, uid, sid=sid)
     budget = float(inst.get("budget", 100.0))
-    uitgegeven = sum(r["prijs"] for r in eigen_ploeg)
+    uitgegeven = sum(r["aangeschaft_prijs"] for r in eigen_ploeg)
     budget_rest = round(budget - uitgegeven, 2)
 
     # Alle lokale actieve renners voor naam-matching en quickAdd
@@ -4504,14 +4520,15 @@ def _build_ai_context(conn):
 
     ploeg = conn.execute("""
         SELECT r.id, r.naam, r.ploeg as renner_ploeg, r.rol, r.prijs,
-               r.totaal_punten, r.geblesseerd
+               r.totaal_punten, r.geblesseerd,
+               COALESCE(m.aangeschaft_prijs, r.prijs) as aangeschaft_prijs
         FROM mijn_ploeg m
         JOIN renners r ON r.id = m.renner_id
         WHERE m.user_id = ? AND m.seizoen_id = ?
         ORDER BY r.prijs DESC
     """, (uid, sid)).fetchall()
 
-    uitgegeven = sum(r["prijs"] for r in ploeg)
+    uitgegeven = sum(r["aangeschaft_prijs"] for r in ploeg)
     budget_resterend = round(budget - uitgegeven, 2)
 
     koersen = conn.execute(
@@ -4711,7 +4728,8 @@ Voeg dit blok NIET toe bij algemene vragen of analyses zonder specifieke wissel.
             _ai_uid = current_user_id()
             _ai_sid = current_seizoen_id(conn)
             ploeg_renners = conn.execute("""
-                SELECT r.id, r.naam, r.prijs
+                SELECT r.id, r.naam, r.prijs,
+                       COALESCE(m.aangeschaft_prijs, r.prijs) as aangeschaft_prijs
                 FROM mijn_ploeg m JOIN renners r ON r.id = m.renner_id
                 WHERE m.user_id = ? AND m.seizoen_id = ?
             """, (_ai_uid, _ai_sid)).fetchall()
@@ -4732,7 +4750,7 @@ Voeg dit blok NIET toe bij algemene vragen of analyses zonder specifieke wissel.
 
             budget_na = None
             if renner_uit and renner_in:
-                ploeg_rest_prijs = sum(r["prijs"] for r in ploeg_renners if r["id"] != renner_uit["id"])
+                ploeg_rest_prijs = sum(r["aangeschaft_prijs"] for r in ploeg_renners if r["id"] != renner_uit["id"])
                 budget_na = round(budget - ploeg_rest_prijs - renner_in["prijs"] - kosten, 2)
 
             transfer_suggestion = {

@@ -115,6 +115,20 @@ def init_db():
         "AND CAST(waarde AS REAL) = 150"
     )
 
+    # Migratie: aangeschaft_prijs toevoegen aan mijn_ploeg
+    try:
+        conn.execute("ALTER TABLE mijn_ploeg ADD COLUMN aangeschaft_prijs REAL DEFAULT 0")
+        conn.commit()
+    except Exception:
+        pass
+    # Populeer bestaande rijen met de huidige marktprijs als benadering
+    conn.execute("""
+        UPDATE mijn_ploeg SET aangeschaft_prijs = (
+            SELECT COALESCE(r.prijs, 0) FROM renners r WHERE r.id = mijn_ploeg.renner_id
+        ) WHERE aangeschaft_prijs IS NULL OR aangeschaft_prijs = 0
+    """)
+    conn.commit()
+
     # Migraties: kolommen toevoegen als ze nog niet bestaan
     try:
         conn.execute("ALTER TABLE renners ADD COLUMN foto TEXT")
