@@ -98,7 +98,7 @@ def init_db():
     # Echte spelregels Sporza Wielermanager
     c.execute("""
         INSERT OR IGNORE INTO instellingen (sleutel, waarde) VALUES
-        ('budget', '150'),
+        ('budget', '120'),
         ('max_renners', '20'),
         ('max_starters', '12'),
         ('max_bus', '8'),
@@ -108,13 +108,11 @@ def init_db():
         ('seizoen', '2026'),
         ('competitie', 'Voorjaar Mannen 2026')
     """)
-    # Migratie: verhoog budget-waarden van 120 → 150 voor zowel de globale sleutel
-    # als alle user/seizoen-specifieke budget_{uid}_{sid} sleutels die door gratis
-    # transfers op 120 werden vastgezet zonder echte budgetwijziging.
+    # Migratie: herstel budget naar 120 voor alle sleutels die naar 150 werden gezet
     conn.execute(
-        "UPDATE instellingen SET waarde='150' "
+        "UPDATE instellingen SET waarde='120' "
         "WHERE (sleutel='budget' OR sleutel LIKE 'budget_%') "
-        "AND CAST(waarde AS REAL) <= 120"
+        "AND CAST(waarde AS REAL) = 150"
     )
 
     # Migraties: kolommen toevoegen als ze nog niet bestaan
