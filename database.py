@@ -108,9 +108,13 @@ def init_db():
         ('seizoen', '2026'),
         ('competitie', 'Voorjaar Mannen 2026')
     """)
-    # Migratie: verhoog de globale budget-default van 120 naar 150 als die nog op de oude waarde staat
+    # Migratie: verhoog budget-waarden van 120 → 150 voor zowel de globale sleutel
+    # als alle user/seizoen-specifieke budget_{uid}_{sid} sleutels die door gratis
+    # transfers op 120 werden vastgezet zonder echte budgetwijziging.
     conn.execute(
-        "UPDATE instellingen SET waarde='150' WHERE sleutel='budget' AND CAST(waarde AS REAL) <= 120"
+        "UPDATE instellingen SET waarde='150' "
+        "WHERE (sleutel='budget' OR sleutel LIKE 'budget_%') "
+        "AND CAST(waarde AS REAL) <= 120"
     )
 
     # Migraties: kolommen toevoegen als ze nog niet bestaan

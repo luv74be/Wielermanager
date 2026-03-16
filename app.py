@@ -1886,7 +1886,10 @@ def do_transfer():
     )
     new_budget = round(budget - kosten, 2)
     _set_user_inst_val(conn, 'transfer_count', str(volgende), uid=uid, sid=sid)
-    _set_user_inst_val(conn, 'budget', str(new_budget), uid=uid, sid=sid)
+    # Budget enkel opslaan als er effectieve kosten zijn; gratis transfers
+    # mogen de fallback-keten niet kortcircuiten (zou upgrades blokkeren).
+    if kosten > 0:
+        _set_user_inst_val(conn, 'budget', str(new_budget), uid=uid, sid=sid)
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "kosten": kosten, "nieuw_budget": new_budget})
