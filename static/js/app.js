@@ -488,6 +488,125 @@ function renderDashboard() {
   `;
 }
 
+// ── Sporza AT watchdog ──────────────────────────────────────────────────────────
+let _atWatchdogTimer = null;
+
+function _startAtWatchdog() {
+  if (_atWatchdogTimer) clearInterval(_atWatchdogTimer);
+  _checkAtStatus();  // meteen bij start
+  _atWatchdogTimer = setInterval(_checkAtStatus, 2 * 60 * 1000); // elke 2 minuten
+}
+
+async function _checkAtStatus() {
+  try {
+    const data = await get('/api/sporza-at-status');
+    const bestaand = document.getElementById('at-verloop-banner');
+
+    if (!data.at_aanwezig) {
+      if (bestaand) bestaand.remove();
+      return;
+    }
+
+    const min = data.minuten_resterend;
+    const verlopen = data.verlopen;
+
+    // Alleen banner tonen als < 10 min resterend of verlopen
+    if (!verlopen && min >= 10) {
+      if (bestaand) bestaand.remove();
+      return;
+    }
+
+    // Verwijder bestaande banner en maak nieuwe
+    if (bestaand) bestaand.remove();
+
+    const banner = document.createElement('div');
+    banner.id = 'at-verloop-banner';
+    const kleur = verlopen ? '#e74c3c' : '#e67e22';
+    const tekst = verlopen
+      ? '⚠️ Sporza-sessie verlopen'
+      : `⏱️ Sporza AT verloopt over ${min.toFixed(0)} min`;
+    banner.style.cssText = `
+      position:fixed; bottom:16px; right:16px; z-index:9999;
+      background:${kleur}; color:#fff; padding:10px 14px;
+      border-radius:10px; box-shadow:0 4px 16px rgba(0,0,0,0.3);
+      display:flex; align-items:center; gap:10px; font-size:0.88rem;
+      max-width:320px; animation: slideInUp 0.3s ease;
+    `;
+    banner.innerHTML = `
+      <span>${tekst}</span>
+      <button onclick="openVernieuwAtModal()" style="
+        background:#fff; color:${kleur}; border:none; border-radius:6px;
+        padding:4px 10px; font-weight:700; cursor:pointer; font-size:0.82rem;
+        white-space:nowrap;
+      ">🔑 Vernieuw</button>
+      <button onclick="this.closest('#at-verloop-banner').remove()" style="
+        background:transparent; border:none; color:#fff; cursor:pointer;
+        font-size:1rem; padding:0 2px; opacity:0.7;
+      ">✕</button>
+    `;
+    document.body.appendChild(banner);
+  } catch(e) {
+    // stil falen — watchdog mag app niet storen
+  }
+}
+
+function openVernieuwAtModal() {
+  const bestaand = document.getElementById('modal-vernieuw-at');
+  if (bestaand) bestaand.remove();
+
+  const modal = document.createElement('div');
+  modal.id = 'modal-vernieuw-at';
+  modal.style.cssText = `
+    position:fixed; inset:0; z-index:10000; background:rgba(0,0,0,0.6);
+    display:flex; align-items:center; justify-content:center; padding:16px;
+  `;
+  modal.innerHTML = `
+    <div style="background:var(--card-bg,#1e2030); border-radius:14px; padding:24px;
+                max-width:460px; width:100%; box-shadow:0 8px 32px rgba(0,0,0,0.5);">
+      <div style="font-size:1.1rem; font-weight:700; margin-bottom:16px;">🔑 Sporza AT vernieuwen</div>
+      <ol style="font-size:0.87rem; line-height:2; margin-bottom:16px; padding-left:1.2rem;">
+        <li>Ga naar <a href="https://sporza.be" target="_blank" style="color:var(--accent)">sporza.be</a> (ingelogd)</li>
+        <li>Open DevTools: <kbd>F12</kbd> of rechtermuisknop → Inspecteren</li>
+        <li>Ga naar <strong>Application</strong> → <strong>Cookies</strong> → <code>sporza.be</code></li>
+        <li>Kopieer de waarde van <code style="background:rgba(255,255,255,0.1);padding:1px 5px;border-radius:4px;">sporza-site_profile_at</code></li>
+        <li>Plak hieronder en klik Opslaan</li>
+      </ol>
+      <textarea id="nieuw-at-input" placeholder="Plak hier de waarde van sporza-site_profile_at…"
+        style="width:100%; height:80px; padding:8px; border-radius:8px; font-size:0.78rem;
+               background:rgba(255,255,255,0.07); border:1px solid rgba(255,255,255,0.2);
+               color:inherit; resize:none; box-sizing:border-box;"></textarea>
+      <div style="display:flex; gap:8px; margin-top:12px;">
+        <button onclick="_slaAtOpVanModal()" class="btn btn-primary" style="flex:1">
+          💾 Opslaan
+        </button>
+        <button onclick="document.getElementById('modal-vernieuw-at').remove()"
+          class="btn btn-secondary">Annuleren</button>
+      </div>
+      <div id="at-modal-feedback" style="margin-top:8px; font-size:0.82rem;"></div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+  setTimeout(() => document.getElementById('nieuw-at-input')?.focus(), 100);
+}
+
+async function _slaAtOpVanModal() {
+  const input = document.getElementById('nieuw-at-input');
+  const feedback = document.getElementById('at-modal-feedback');
+  const at = (input?.value || '').trim();
+  if (!at) { if (feedback) feedback.innerHTML = '<span style="color:#e74c3c">Plak eerst de AT-waarde.</span>'; return; }
+  try {
+    if (feedback) feedback.innerHTML = '⏳ Opslaan…';
+    await post('/api/instellingen/sporza-at', { at });
+    if (feedback) feedback.innerHTML = '<span style="color:#2ecc71">✅ AT opgeslagen! Verbinding actief.</span>';
+    document.getElementById('at-verloop-banner')?.remove();
+    setTimeout(() => document.getElementById('modal-vernieuw-at')?.remove(), 1200);
+    _checkAtStatus();  // meteen status updaten
+  } catch(e) {
+    if (feedback) feedback.innerHTML = `<span style="color:#e74c3c">Fout: ${e.message}</span>`;
+  }
+}
+
 // ── Live wedstrijd ─────────────────────────────────────────────────────────────
 let _liveRefreshTimer = null;
 
@@ -4968,4 +5087,6 @@ async function vraagNotificatiePermissie() {
   renderPage();
   // Check after a short delay (state must be loaded)
   setTimeout(checkOpstellingNotificatie, 1500);
+  // Start AT watchdog — toont banner als Sporza AT bijna verloopt
+  setTimeout(_startAtWatchdog, 2000);
 })();

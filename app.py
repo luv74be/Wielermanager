@@ -4350,6 +4350,51 @@ def sporza_refresh_debug():
         return jsonify({"ok": False, "fout": str(e)})
 
 
+@app.route("/api/sporza-at-status")
+def sporza_at_status():
+    """Lichtgewicht check: is de Sporza AT nog geldig en hoelang nog?
+    Gebruikt door de client-side watchdog om een verloopwaarschuwing te tonen."""
+    import base64, time as _time
+    uid = current_user_id()
+    if not uid:
+        return jsonify({"verlopen": True, "minuten_resterend": 0, "at_aanwezig": False})
+    conn = get_db()
+    sid = current_seizoen_id(conn)
+    at = (_get_user_inst_val(conn, 'sporza_cookie', sid=sid) or '').strip()
+    conn.close()
+    if not at:
+        return jsonify({"verlopen": True, "minuten_resterend": 0, "at_aanwezig": False})
+    try:
+        payload_b64 = at.split('.')[1]
+        payload_b64 += '=' * (-len(payload_b64) % 4)
+        payload = json.loads(base64.b64decode(payload_b64).decode('utf-8'))
+        exp = payload.get('exp', 0)
+        nu  = int(_time.time())
+        verlopen = exp < nu
+        minuten  = round((exp - nu) / 60, 1)
+        return jsonify({"verlopen": verlopen, "minuten_resterend": minuten, "at_aanwezig": True})
+    except Exception:
+        return jsonify({"verlopen": True, "minuten_resterend": 0, "at_aanwezig": True})
+
+
+@app.route("/api/instellingen/sporza-at", methods=["POST"])
+def sla_sporza_at_op():
+    """Sla enkel de Sporza AT op (gebruikt door de 'Vernieuw AT'-modal)."""
+    uid = current_user_id()
+    if not uid:
+        return jsonify({"error": "Niet ingelogd"}), 401
+    data = request.get_json(silent=True) or {}
+    at = (data.get("at") or "").strip()
+    if not at:
+        return jsonify({"error": "Geen AT meegegeven"}), 400
+    conn = get_db()
+    sid = current_seizoen_id(conn)
+    _set_user_inst_val(conn, 'sporza_cookie', at, sid=sid)
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
 @app.route("/api/sporza-verbinding-test")
 def sporza_verbinding_test():
     import base64, time as _time
