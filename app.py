@@ -4399,16 +4399,12 @@ def sla_sporza_at_op():
 def sporza_verbinding_test():
     import base64, time as _time
     conn = get_db()
-    at_raw = conn.execute(
-        "SELECT waarde FROM instellingen WHERE sleutel='sporza_cookie'"
-    ).fetchone()
-    rt_raw = conn.execute(
-        "SELECT waarde FROM instellingen WHERE sleutel='sporza_cookie_rt'"
-    ).fetchone()
+    # Gebruik _get_user_inst_val zodat de user+seizoen-specifieke waarde gevonden wordt
+    # (zelfde fallback-keten als _get_sporza_at)
+    at = (_get_user_inst_val(conn, 'sporza_cookie') or '').strip()
+    rt = (_get_user_inst_val(conn, 'sporza_cookie_rt') or '').strip()
     conn.close()
 
-    at = (at_raw['waarde'] if at_raw and at_raw['waarde'] else '').strip()
-    rt = (rt_raw['waarde'] if rt_raw and rt_raw['waarde'] else '').strip()
     rt_aanwezig = bool(rt)
 
     def _jwt_info(token):
