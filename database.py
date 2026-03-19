@@ -168,7 +168,6 @@ def init_db():
     """)
 
     # ── Multi-user: user_id toevoegen aan mijn_ploeg ──────────────────────────
-    # SQLite ondersteunt geen DROP CONSTRAINT, dus we recreëren de tabel.
     _ploeg_cols = {row[1] for row in conn.execute("PRAGMA table_info(mijn_ploeg)").fetchall()}
     if 'user_id' not in _ploeg_cols:
         conn.execute("ALTER TABLE mijn_ploeg RENAME TO mijn_ploeg_old")
@@ -302,32 +301,48 @@ def init_db():
         except Exception:
             pass  # Kolom bestaat al
 
-    # Vul sporza_match_id in voor bestaande koersen (seizoen 1 = Voorjaar Mannen 2026)
-    _sporza_match_ids = {
-        'Omloop Het Nieuwsblad':    3305179,
-        'Kuurne-Brussel-Kuurne':    3305413,
-        'Samyn Classic':            3305491,
-        'Strade Bianche':           3305174,
-        'Nokere Koerse':            3305415,
-        'Bredene Koksijde Classic': 3305417,
-        'Milaan-Sanremo':           3305369,
-        'Ronde van Brugge':         3305186,
-        'E3 Saxo Classic':          3305198,
-        'In Flanders Fields':       3305178,
-        'Dwars door Vlaanderen':    3305169,
-        'Ronde van Vlaanderen':     3305200,
-        'Scheldeprijs':             3305403,
-        'Parijs-Roubaix':           3305168,
-        'Ronde van Limburg':        3305492,
-        'Brabantse Pijl':           3305418,
-        'Amstel Gold Race':         3305192,
-        'Waalse Pijl':              3305188,
-        'Luik-Bastenaken-Luik':     3305197,
+    # ── Migratie: pcs_slug kolom toevoegen aan koersen ────────────────────────
+    try:
+        conn.execute("ALTER TABLE koersen ADD COLUMN pcs_slug TEXT")
+        conn.commit()
+    except Exception:
+        pass  # Kolom bestaat al
+
+    # Vul sporza_match_id én pcs_slug in voor bestaande koersen
+    _koers_data = {
+        # naam: (sporza_match_id, pcs_slug)
+        'Omloop Het Nieuwsblad':    (3305179, 'omloop-het-nieuwsblad'),
+        'Kuurne-Brussel-Kuurne':    (3305413, 'kuurne-brussel-kuurne'),
+        'Samyn Classic':            (3305491, 'le-samyn'),
+        'Strade Bianche':           (3305174, 'strade-bianche'),
+        'Nokere Koerse':            (3305415, 'nokere-koerse'),
+        'Bredene Koksijde Classic': (3305417, 'bredene-koksijde-classic'),
+        'Milaan-Sanremo':           (3305369, 'milano-sanremo'),
+        'Ronde van Brugge':         (3305186, 'ronde-van-brugge'),
+        'E3 Saxo Classic':          (3305198, 'e3-saxo-classic'),
+        'In Flanders Fields':       (3305178, 'gent-wevelgem'),
+        'Dwars door Vlaanderen':    (3305169, 'dwars-door-vlaanderen'),
+        'Ronde van Vlaanderen':     (3305200, 'ronde-van-vlaanderen'),
+        'Scheldeprijs':             (3305403, 'scheldeprijs'),
+        'Parijs-Roubaix':           (3305168, 'paris-roubaix'),
+        'Ronde van Limburg':        (3305492, 'ronde-van-limburg'),
+        'Brabantse Pijl':           (3305418, 'la-fleche-brabanconne'),
+        'Amstel Gold Race':         (3305192, 'amstel-gold-race'),
+        'Waalse Pijl':              (3305188, 'la-fleche-wallonne'),
+        'Luik-Bastenaken-Luik':     (3305197, 'liege-bastogne-liege'),
+        'Eschborn-Frankfurt':       (None,    'eschborn-frankfurt'),
     }
-    for _naam, _mid in _sporza_match_ids.items():
+    for _naam, (_mid, _slug) in _koers_data.items():
+        if _mid:
+            conn.execute(
+                "UPDATE koersen SET sporza_match_id=?, pcs_slug=? "
+                "WHERE naam=? AND (sporza_match_id IS NULL OR sporza_match_id=0)",
+                (_mid, _slug, _naam)
+            )
+        # pcs_slug altijd updaten als nog leeg (ook zonder sporza_match_id)
         conn.execute(
-            "UPDATE koersen SET sporza_match_id=? WHERE naam=? AND (sporza_match_id IS NULL OR sporza_match_id=0)",
-            (_mid, _naam)
+            "UPDATE koersen SET pcs_slug=? WHERE naam=? AND (pcs_slug IS NULL OR pcs_slug='')",
+            (_slug, _naam)
         )
     conn.commit()
 
@@ -381,7 +396,7 @@ def init_db():
         )
     """)
 
-    # Migratie: renner_aliassen tabel (naam-aliassen voor PCS/Sporza matching)
+    # Migratie: renner_aliassen tabel
     conn.execute("""
         CREATE TABLE IF NOT EXISTS renner_aliassen (
             id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -393,10 +408,8 @@ def init_db():
 
     # Pre-populate bekende aliassen (idempotent via INSERT OR IGNORE)
     seed_aliassen = [
-        # Tom Pidcock: volledige naam is Thomas, PCS toont "PIDCOCK Thomas"
         ('Tom Pidcock',    'thomas pidcock'),
         ('Tom Pidcock',    'pidcock thomas'),
-        # A.W. Philipsen: PCS toont "Withen Philipsen Albert"
         ('A.W. Philipsen', 'albert withen philipsen'),
         ('A.W. Philipsen', 'withen philipsen albert'),
         ('A.W. Philipsen', 'philipsen albert withen'),
@@ -474,7 +487,6 @@ def seed_renners(conn=None, seizoen_id=1):
         return
 
     renners = [
-        # (naam, ploeg, rol, prijs)
         ("Tadej Pogacar",        "UAE Team Emirates",            "allrounder",  28.0),
         ("Mathieu van der Poel", "Alpecin-Deceuninck",           "allrounder",  24.0),
         ("Wout van Aert",        "Visma-Lease a Bike",           "allrounder",  23.0),
@@ -539,33 +551,35 @@ def seed_koersen(conn=None, seizoen_id=1):
             conn.close()
         return
 
-    # Echte Sporza Wielermanager Voorjaar 2026 kalender (19 koersen)
+    # Echte Sporza Wielermanager Voorjaar 2026 kalender
+    # (naam, datum, soort, afgelopen, sporza_match_id, pcs_slug)
     koersen = [
-        # (naam, datum, soort, afgelopen)
-        ("Omloop Het Nieuwsblad",    "2026-02-28", "worldtour", 1),
-        ("Kuurne-Brussel-Kuurne",    "2026-03-01", "niet_wt",   1),
-        ("Samyn Classic",            "2026-03-03", "niet_wt",   0),
-        ("Strade Bianche",           "2026-03-07", "worldtour", 0),
-        ("Nokere Koerse",            "2026-03-18", "niet_wt",   0),
-        ("Bredene Koksijde Classic", "2026-03-20", "niet_wt",   0),
-        ("Milaan-Sanremo",           "2026-03-21", "monument",  0),
-        ("Ronde van Brugge",         "2026-03-25", "worldtour", 0),
-        ("E3 Saxo Classic",          "2026-03-27", "worldtour", 0),
-        ("Dwars door Vlaanderen",    "2026-04-01", "worldtour", 0),
-        ("Ronde van Vlaanderen",     "2026-04-05", "monument",  0),
-        ("Scheldeprijs",             "2026-04-08", "niet_wt",   0),
-        ("Parijs-Roubaix",           "2026-04-12", "monument",  0),
-        ("Ronde van Limburg",        "2026-04-15", "niet_wt",   0),
-        ("Brabantse Pijl",           "2026-04-17", "niet_wt",   0),
-        ("Amstel Gold Race",         "2026-04-19", "worldtour", 0),
-        ("Waalse Pijl",              "2026-04-22", "worldtour", 0),
-        ("Luik-Bastenaken-Luik",     "2026-04-26", "monument",  0),
-        ("Eschborn-Frankfurt",       "2026-05-01", "worldtour", 0),
+        ("Omloop Het Nieuwsblad",    "2026-02-28", "worldtour", 1, 3305179, "omloop-het-nieuwsblad"),
+        ("Kuurne-Brussel-Kuurne",    "2026-03-01", "niet_wt",   1, 3305413, "kuurne-brussel-kuurne"),
+        ("Samyn Classic",            "2026-03-03", "niet_wt",   0, 3305491, "le-samyn"),
+        ("Strade Bianche",           "2026-03-07", "worldtour", 0, 3305174, "strade-bianche"),
+        ("Nokere Koerse",            "2026-03-18", "niet_wt",   0, 3305415, "nokere-koerse"),
+        ("Bredene Koksijde Classic", "2026-03-20", "niet_wt",   0, 3305417, "bredene-koksijde-classic"),
+        ("Milaan-Sanremo",           "2026-03-21", "monument",  0, 3305369, "milano-sanremo"),
+        ("Ronde van Brugge",         "2026-03-25", "worldtour", 0, 3305186, "ronde-van-brugge"),
+        ("E3 Saxo Classic",          "2026-03-27", "worldtour", 0, 3305198, "e3-saxo-classic"),
+        ("In Flanders Fields",       "2026-03-29", "worldtour", 0, 3305178, "gent-wevelgem"),
+        ("Dwars door Vlaanderen",    "2026-04-01", "worldtour", 0, 3305169, "dwars-door-vlaanderen"),
+        ("Ronde van Vlaanderen",     "2026-04-05", "monument",  0, 3305200, "ronde-van-vlaanderen"),
+        ("Scheldeprijs",             "2026-04-08", "niet_wt",   0, 3305403, "scheldeprijs"),
+        ("Parijs-Roubaix",           "2026-04-12", "monument",  0, 3305168, "paris-roubaix"),
+        ("Ronde van Limburg",        "2026-04-15", "niet_wt",   0, 3305492, "ronde-van-limburg"),
+        ("Brabantse Pijl",           "2026-04-17", "niet_wt",   0, 3305418, "la-fleche-brabanconne"),
+        ("Amstel Gold Race",         "2026-04-19", "worldtour", 0, 3305192, "amstel-gold-race"),
+        ("Waalse Pijl",              "2026-04-22", "worldtour", 0, 3305188, "la-fleche-wallonne"),
+        ("Luik-Bastenaken-Luik",     "2026-04-26", "monument",  0, 3305197, "liege-bastogne-liege"),
+        ("Eschborn-Frankfurt",       "2026-05-01", "worldtour", 0, None,    "eschborn-frankfurt"),
     ]
 
     conn.executemany(
-        "INSERT INTO koersen (naam, datum, soort, afgelopen, seizoen_id) VALUES (?,?,?,?,?)",
-        [(k[0], k[1], k[2], k[3], seizoen_id) for k in koersen]
+        "INSERT INTO koersen (naam, datum, soort, afgelopen, seizoen_id, sporza_match_id, pcs_slug) "
+        "VALUES (?,?,?,?,?,?,?)",
+        [(k[0], k[1], k[2], k[3], seizoen_id, k[4], k[5]) for k in koersen]
     )
     conn.commit()
     if _own_conn:
