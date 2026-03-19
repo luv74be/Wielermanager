@@ -2325,7 +2325,7 @@ def set_opstelling(kid):
 def get_deelnemers(kid):
     conn = get_db()
     sid = current_seizoen_id(conn)
-    koers = conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone()
+    koers = dict(conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone() or {})
     if not koers:
         conn.close()
         return jsonify({"error": "Koers niet gevonden"}), 404
@@ -2406,7 +2406,7 @@ def get_deelnemers(kid):
 def get_uitslag_pcs(kid):
     conn = get_db()
     sid = current_seizoen_id(conn)
-    koers = conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone()
+    koers = dict(conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone() or {})
     if not koers:
         conn.close()
         return jsonify({"error": "Koers niet gevonden"}), 404
@@ -2552,7 +2552,7 @@ def get_uitslag_pcs(kid):
 @app.route("/api/koersen/<int:kid>/fetch-profiel", methods=["POST"])
 def fetch_profiel(kid):
     conn = get_db()
-    koers = conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone()
+    koers = dict(conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone() or {})
     if not koers:
         conn.close()
         return jsonify({"error": "Koers niet gevonden"}), 404
@@ -2680,7 +2680,7 @@ def _get_pcs_favorieten(slug, year):
 @app.route("/api/koersen/<int:kid>/favorieten")
 def get_koers_favorieten(kid):
     conn = get_db()
-    koers = conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone()
+    koers = dict(conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone() or {})
     if not koers:
         conn.close()
         return jsonify([])
@@ -2725,7 +2725,7 @@ def get_koers_favorieten(kid):
 @app.route("/api/koersen/<int:kid>/fetch-favorieten", methods=["POST"])
 def fetch_koers_favorieten(kid):
     conn = get_db()
-    koers = conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone()
+    koers = dict(conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone() or {})
     if not koers:
         conn.close()
         return jsonify({"error": "Koers niet gevonden"}), 404
@@ -2862,7 +2862,7 @@ def add_resultaten_bulk(kid):
     uid = current_user_id()
     conn = get_db()
 
-    koers = conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone()
+    koers = dict(conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone() or {})
     if not koers:
         conn.close()
         return jsonify({"error": "Koers niet gevonden"}), 404
@@ -3489,7 +3489,7 @@ def _doorzetten_sporza_impl(kid):
     conn = get_db()
     sid = current_seizoen_id(conn)
     edition = _get_sporza_edition(conn, sid)
-    koers = conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone()
+    koers = dict(conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone() or {})
     if not koers:
         conn.close()
         return jsonify({"error": "Koers niet gevonden"}), 404
@@ -3724,7 +3724,7 @@ def get_koers_live_debug(kid):
     conn = get_db()
     sid = current_seizoen_id(conn)
     edition = _get_sporza_edition(conn, sid)
-    koers = conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone()
+    koers = dict(conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone() or {})
     cookie_at = _get_sporza_at(conn, sid=sid)
     conn.close()
     slug = koers['pcs_slug']
@@ -3820,7 +3820,7 @@ def get_koers_live(kid):
     conn = get_db()
     sid = current_seizoen_id(conn)
     edition = _get_sporza_edition(conn, sid)
-    koers = conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone()
+    koers = dict(conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone() or {})
     if not koers:
         conn.close()
         return jsonify({"error": "Koers niet gevonden"}), 404
@@ -4035,7 +4035,7 @@ def debug_sporza(kid):
     conn = get_db()
     sid = current_seizoen_id(conn)
     edition = _get_sporza_edition(conn, sid)
-    koers = conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone()
+    koers = dict(conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone() or {})
     if not koers:
         conn.close()
         return jsonify({"error": "Koers niet gevonden"}), 404
