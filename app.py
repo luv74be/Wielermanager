@@ -2465,13 +2465,25 @@ def get_uitslag_pcs(kid):
         if not rider_link:
             continue
         rider_name = rider_link.get_text(separator=' ', strip=True)
+        # PCS toont namen soms als "LASTNAME Firstname" (bijv. "Menten Milan").
+        # De rider-slug in href="rider/milan-menten" heeft altijd Firstname-Lastname
+        # volgorde (slug = genormaliseerde naam in correcte volgorde).
+        # Gebruik de slug voor matching zodat achternaam altijd de laatste token is.
+        rider_href = rider_link.get('href', '')
+        slug_part = rider_href.replace('rider/', '').split('/')[0]
+        rider_name_norm = slug_part.replace('-', ' ')  # "milan-menten" -> "milan menten"
         team_name = ''
         for cell in cells[1:]:
             tl = cell.find('a', href=lambda h: h and h.startswith('team/'))
             if tl:
                 team_name = tl.get_text(strip=True)
                 break
-        pcs_top30.append({'positie': pos, 'naam': rider_name, 'ploeg_pcs': team_name})
+        pcs_top30.append({
+            'positie': pos,
+            'naam': rider_name,          # weergavenaam voor UI
+            'naam_norm': rider_name_norm, # slug-gebaseerd voor matching
+            'ploeg_pcs': team_name,
+        })
 
     if not pcs_top30:
         return jsonify({"error": "Geen uitslag gevonden op de PCS-pagina (koers mogelijk nog niet gereden)."}), 404
@@ -2483,9 +2495,11 @@ def get_uitslag_pcs(kid):
     for r in ploeg:
         pos = None
         for pcs in pcs_top30:
-            if _name_match(r['naam'], {_norm(pcs['naam'])}):
+            # Gebruik naam_norm (uit rider-slug) voor matching — correct Firstname Lastname
+            # Dit voorkomt dat "Menten Milan" (weergavenaam) matcht op db "Matteo Milan"
+            if _name_match(r['naam'], {pcs['naam_norm']}):
                 app.logger.warning(
-                    f"[UITSLAG MATCH] db='{r['naam']}' -> pcs='{pcs['naam']}' pos={pcs['positie']}"
+                    f"[UITSLAG MATCH] db='{r['naam']}' -> pcs='{pcs['naam']}' (slug: {pcs['naam_norm']}) pos={pcs['positie']}"
                 )
                 pos = pcs['positie']
                 break
