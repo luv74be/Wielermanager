@@ -562,25 +562,39 @@ function openVernieuwAtModal() {
   `;
   modal.innerHTML = `
     <div style="background:var(--card-bg,#1e2030); border-radius:14px; padding:24px;
-                max-width:460px; width:100%; box-shadow:0 8px 32px rgba(0,0,0,0.5);">
-      <div style="font-size:1.1rem; font-weight:700; margin-bottom:16px;">🔑 Sporza AT vernieuwen</div>
-      <ol style="font-size:0.87rem; line-height:2; margin-bottom:16px; padding-left:1.2rem;">
-        <li>Ga naar <a href="https://sporza.be" target="_blank" style="color:var(--accent)">sporza.be</a> (ingelogd)</li>
-        <li>Open DevTools: <kbd>F12</kbd> of rechtermuisknop → Inspecteren</li>
-        <li>Ga naar <strong>Application</strong> → <strong>Cookies</strong> → <code>sporza.be</code></li>
-        <li>Kopieer de waarde van <code style="background:rgba(255,255,255,0.1);padding:1px 5px;border-radius:4px;">sporza-site_profile_at</code></li>
-        <li>Plak hieronder en klik Opslaan</li>
-      </ol>
-      <textarea id="nieuw-at-input" placeholder="Plak hier de waarde van sporza-site_profile_at…"
-        style="width:100%; height:80px; padding:8px; border-radius:8px; font-size:0.78rem;
+                max-width:480px; width:100%; box-shadow:0 8px 32px rgba(0,0,0,0.5);">
+      <div style="font-size:1.1rem; font-weight:700; margin-bottom:12px;">🔑 Sporza AT vernieuwen</div>
+
+      <a href="https://sporza.be" target="_blank"
+         style="display:block;text-align:center;background:var(--accent);color:#fff;
+                padding:10px;border-radius:8px;font-weight:700;margin-bottom:14px;text-decoration:none;">
+        1. Open sporza.be (nieuw tabblad) →
+      </a>
+
+      <div style="font-size:0.85rem;line-height:1.8;margin-bottom:14px;
+                  background:rgba(255,255,255,0.05);padding:10px;border-radius:8px;">
+        <strong>2.</strong> Druk <kbd style="background:rgba(255,255,255,0.15);padding:1px 6px;border-radius:4px">F12</kbd>
+        om DevTools te openen<br>
+        <strong>3.</strong> Klik op het tabblad <strong>Application</strong> (of Toepassing)<br>
+        <strong>4.</strong> Links: <strong>Cookies</strong> → klik op <code>https://sporza.be</code><br>
+        <strong>5.</strong> Zoek de rij <code style="background:rgba(255,200,0,0.2);padding:1px 4px;border-radius:3px">sporza-site_profile_at</code><br>
+        <strong>6.</strong> Klik op de waarde → <kbd>Ctrl+A</kbd> → <kbd>Ctrl+C</kbd> om te kopiëren
+      </div>
+
+      <div style="font-size:0.82rem;font-weight:600;margin-bottom:4px;">
+        7. Plak de gekopieerde waarde hier:
+      </div>
+      <textarea id="nieuw-at-input" placeholder="eyJhbGciOi… (lange tekst)"
+        style="width:100%; height:72px; padding:8px; border-radius:8px; font-size:0.75rem;
                background:rgba(255,255,255,0.07); border:1px solid rgba(255,255,255,0.2);
-               color:inherit; resize:none; box-sizing:border-box;"></textarea>
-      <div style="display:flex; gap:8px; margin-top:12px;">
-        <button onclick="_slaAtOpVanModal()" class="btn btn-primary" style="flex:1">
-          💾 Opslaan
+               color:inherit; resize:none; box-sizing:border-box; font-family:monospace;"></textarea>
+
+      <div style="display:flex; gap:8px; margin-top:10px;">
+        <button onclick="_slaAtOpVanModal()" class="btn btn-primary" style="flex:1;font-size:0.95rem">
+          💾 Opslaan &amp; activeren
         </button>
         <button onclick="document.getElementById('modal-vernieuw-at').remove()"
-          class="btn btn-secondary">Annuleren</button>
+          class="btn btn-secondary">✕</button>
       </div>
       <div id="at-modal-feedback" style="margin-top:8px; font-size:0.82rem;"></div>
     </div>
@@ -2669,15 +2683,13 @@ async function testSporzaVerbinding() {
         extra = `<div class="text-muted fs-sm">Cookie verloopt over ${data.minuten_resterend} minuten</div>`;
       if (data.sporza_body)
         extra += `<div class="text-muted fs-sm" style="margin-top:4px;word-break:break-all">Sporza: ${data.sporza_body}</div>`;
-      if (data.stap === 'refresh_mislukt' || data.stap === 'verlopen')
+      if (data.stap === 'refresh_mislukt' || data.stap === 'verlopen' || data.stap === 'geen_at')
         extra += `
-          <div style="margin-top:10px;padding:8px;background:rgba(0,0,0,0.15);border-radius:6px;font-size:0.82rem;line-height:1.5">
-            <strong>💡 Workaround:</strong> de auto-refresh lukt niet. Je kan ook de <strong>AT</strong>
-            (cookie <code>sporza-site_profile_at</code>) rechtstreeks invullen in het AT-veld hieronder.
-            Die verloopt na ~15 min maar werkt meteen. Haal hem op via DevTools → Application → Cookies → sporza.be
+          <div style="margin-top:12px">
+            <button onclick="openVernieuwAtModal()" class="btn btn-primary" style="width:100%;font-size:0.95rem;padding:10px">
+              🔑 Vernieuw AT — klik hier
+            </button>
           </div>`;
-      if (data.rt_info)
-        extra += `<div class="text-muted fs-sm" style="margin-top:4px">RT: lengte ${data.rt_info.lengte}, start <code>${data.rt_info.begin}</code></div>`;
       resultDiv.innerHTML = `
         <div style="padding:10px;border-radius:8px;border:1px solid ${kleur};background:${kleur}22">
           <div style="color:${kleur};font-weight:600">${data.bericht}</div>
