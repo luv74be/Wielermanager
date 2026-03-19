@@ -2550,6 +2550,15 @@ async function testSporzaVerbinding() {
         extra = `<div class="text-muted fs-sm">Cookie verloopt over ${data.minuten_resterend} minuten</div>`;
       if (data.sporza_body)
         extra += `<div class="text-muted fs-sm" style="margin-top:4px;word-break:break-all">Sporza: ${data.sporza_body}</div>`;
+      if (data.stap === 'refresh_mislukt' || data.stap === 'verlopen')
+        extra += `
+          <div style="margin-top:10px;padding:8px;background:rgba(0,0,0,0.15);border-radius:6px;font-size:0.82rem;line-height:1.5">
+            <strong>💡 Workaround:</strong> de auto-refresh lukt niet. Je kan ook de <strong>AT</strong>
+            (cookie <code>sporza-site_profile_at</code>) rechtstreeks invullen in het AT-veld hieronder.
+            Die verloopt na ~15 min maar werkt meteen. Haal hem op via DevTools → Application → Cookies → sporza.be
+          </div>`;
+      if (data.rt_info)
+        extra += `<div class="text-muted fs-sm" style="margin-top:4px">RT: lengte ${data.rt_info.lengte}, start <code>${data.rt_info.begin}</code></div>`;
       resultDiv.innerHTML = `
         <div style="padding:10px;border-radius:8px;border:1px solid ${kleur};background:${kleur}22">
           <div style="color:${kleur};font-weight:600">${data.bericht}</div>

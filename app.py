@@ -3011,7 +3011,7 @@ def _refresh_sporza_at(conn, sid=None):
     """Vernieuw de Sporza AT via de opgeslagen RT cookie.
     Geeft de nieuwe AT-waarde terug, of None als refresh mislukt.
 
-    Probeert meerdere endpoints en methodes (cloudscraper + plain requests).
+    Probeert meerdere varianten: met/zonder expired AT, GET/POST, cloudscraper/requests.
     """
     if sid is None: sid = current_seizoen_id(conn)
     rt = (_get_user_inst_val(conn, 'sporza_cookie_rt', sid=sid) or '').strip()
@@ -3019,7 +3019,13 @@ def _refresh_sporza_at(conn, sid=None):
         app.logger.warning("_refresh_sporza_at: geen RT opgeslagen")
         return None
 
-    app.logger.info(f"_refresh_sporza_at: RT aanwezig, lengte={len(rt)}, begin={rt[:12]}…")
+    # Haal ook de (mogelijk verlopen) AT op — sommige SSO's vereisen beide cookies
+    at_oud = (_get_user_inst_val(conn, 'sporza_cookie', sid=sid) or '').strip()
+
+    app.logger.info(
+        f"_refresh_sporza_at: RT lengte={len(rt)}, begin={rt[:12]}… | "
+        f"AT_oud aanwezig={bool(at_oud)}, lengte={len(at_oud)}"
+    )
 
     def _extract_at(resp):
         """Haal AT uit cookies of Set-Cookie header van een response."""
@@ -3051,53 +3057,54 @@ def _refresh_sporza_at(conn, sid=None):
         'Sec-Fetch-Site': 'same-origin',
     }
 
-    # Probeer meerdere varianten
+    # Cookie-combinaties om te proberen: RT alleen, RT+AT samen
+    cookie_rt_only    = f'sporza-site_profile_rt={rt}'
+    cookie_rt_plus_at = f'sporza-site_profile_rt={rt}; sporza-site_profile_at={at_oud}' if at_oud else cookie_rt_only
+
+    # (library, method, cookie_string)
     pogingen = [
-        # (library, method, url, extra_headers)
-        ('cloudscraper', 'GET',  'https://sporza.be/sso/refresh', {}),
-        ('cloudscraper', 'POST', 'https://sporza.be/sso/refresh', {}),
-        ('requests',     'GET',  'https://sporza.be/sso/refresh', {}),
-        ('requests',     'GET',  'https://sporza.be/sso/refresh',
-            {'Cookie': f'sporza-site_profile_rt={rt}; sporza-site_profile_at='}),
+        ('cloudscraper', 'GET',  cookie_rt_plus_at),   # RT + verlopen AT samen
+        ('cloudscraper', 'GET',  cookie_rt_only),       # alleen RT
+        ('cloudscraper', 'POST', cookie_rt_plus_at),
+        ('cloudscraper', 'POST', cookie_rt_only),
+        ('requests',     'GET',  cookie_rt_plus_at),
+        ('requests',     'GET',  cookie_rt_only),
     ]
 
-    for lib, method, url, extra_hdrs in pogingen:
+    last_status = None
+    for lib, method, cookie_str in pogingen:
         try:
-            headers = {**common_headers, 'Cookie': f'sporza-site_profile_rt={rt}', **extra_hdrs}
+            headers = {**common_headers, 'Cookie': cookie_str}
             if lib == 'cloudscraper':
                 scraper = cloudscraper.create_scraper()
                 fn = scraper.get if method == 'GET' else scraper.post
-                resp = fn(url, headers=headers, timeout=15, allow_redirects=True)
+                resp = fn('https://sporza.be/sso/refresh', headers=headers, timeout=15, allow_redirects=True)
             else:
                 import requests as _req
                 fn = _req.get if method == 'GET' else _req.post
-                resp = fn(url, headers=headers, timeout=15, allow_redirects=True)
+                resp = fn('https://sporza.be/sso/refresh', headers=headers, timeout=15, allow_redirects=True)
 
+            last_status = resp.status_code
             app.logger.info(
-                f"_refresh_sporza_at [{lib} {method}]: HTTP {resp.status_code}, "
-                f"body={resp.text[:150]}, "
-                f"set-cookie keys={[k for k in resp.cookies.keys()]}"
+                f"_refresh_sporza_at [{lib} {method} cookie={cookie_str[:30]}…]: "
+                f"HTTP {resp.status_code}, body={resp.text[:150]}, "
+                f"cookies={list(resp.cookies.keys())}"
             )
 
             new_at = _extract_at(resp)
             if new_at and new_at != 'deleted':
                 _set_user_inst_val(conn, 'sporza_cookie', new_at, sid=sid)
                 conn.commit()
-                app.logger.info(f"_refresh_sporza_at: nieuwe AT opgeslagen via [{lib} {method}] ✅")
+                app.logger.info(f"_refresh_sporza_at: nieuwe AT opgeslagen ✅ via [{lib} {method}]")
                 return new_at
-
-            if resp.status_code == 401:
-                app.logger.warning(
-                    f"_refresh_sporza_at [{lib} {method}]: 401 — RT ongeldig of verlopen. "
-                    f"Antwoord: {resp.text[:200]}"
-                )
-                # 401 = RT zelf is invalid → verder proberen heeft geen zin
-                break
 
         except Exception as e:
             app.logger.error(f"_refresh_sporza_at [{lib} {method}]: fout: {e}")
 
-    app.logger.warning("_refresh_sporza_at: alle pogingen mislukt — RT vernieuwen in Instellingen")
+    app.logger.warning(
+        f"_refresh_sporza_at: alle pogingen mislukt (laatste HTTP {last_status}). "
+        "RT vernieuwen in Instellingen of opnieuw inloggen op sporza.be."
+    )
     return None
 
 
