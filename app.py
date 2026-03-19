@@ -4436,26 +4436,21 @@ def sporza_verbinding_test():
             else:
                 return jsonify({
                     "ok": False, "stap": "refresh_mislukt",
-                    "rt_aanwezig": True,
-                    "rt_info": rt_info,
-                    "bericht": (
-                        "RT gevonden maar auto-refresh mislukte (HTTP 401). "
-                        "De RT is waarschijnlijk verlopen of ongeldig. "
-                        f"RT start met: {rt_info['begin']} (lengte {rt_info['lengte']}). "
-                        "Haal een verse RT op uit je browser (cookie 'sporza-site_profile_rt' op sporza.be)."
-                    ),
+                    "bericht": "⚠️ Sporza-sessie verlopen. Klik op de knop hieronder om te vernieuwen.",
                 })
         else:
-            return jsonify({"ok": False, "stap": "geen_at", "rt_aanwezig": False,
-                            "bericht": "Geen AT én geen RT opgeslagen. Stel beide in via Instellingen."})
+            return jsonify({
+                "ok": False, "stap": "geen_at",
+                "bericht": "⚠️ Geen Sporza-sessie ingesteld. Klik op de knop hieronder.",
+            })
 
     jwt = _jwt_info(at)
     if "jwt_parse_fout" in jwt:
-        return jsonify({"ok": False, "stap": "jwt_ongeldig", "rt_aanwezig": rt_aanwezig,
-                        "bericht": f"Opgeslagen waarde is geen geldig JWT: {jwt['jwt_parse_fout']}",
-                        "at_begin": at[:40] + "…", "at_lengte": len(at)})
+        return jsonify({"ok": False, "stap": "refresh_mislukt",
+                        "bericht": "⚠️ Sporza-sessie verlopen. Klik op de knop hieronder om te vernieuwen."})
 
     if jwt.get("verlopen"):
+        # Probeer auto-refresh — als dat mislukt, simpele boodschap
         if rt_aanwezig:
             conn2 = get_db()
             new_at = _refresh_sporza_at(conn2)
@@ -4465,21 +4460,13 @@ def sporza_verbinding_test():
                 jwt = _jwt_info(at)
             else:
                 return jsonify({
-                    "ok": False, "stap": "refresh_mislukt", "rt_aanwezig": True,
-                    "rt_info": rt_info,
-                    "bericht": (
-                        "AT verlopen. RT aanwezig maar auto-refresh mislukte (HTTP 401). "
-                        "De RT is waarschijnlijk zelf verlopen. "
-                        f"RT start met: {rt_info['begin']} (lengte {rt_info['lengte']}). "
-                        "Haal een verse RT op uit je browser (cookie 'sporza-site_profile_rt' op sporza.be)."
-                    ),
-                    **jwt,
+                    "ok": False, "stap": "refresh_mislukt",
+                    "bericht": "⚠️ Sporza-sessie verlopen. Klik op de knop hieronder om te vernieuwen.",
                 })
         else:
             return jsonify({
-                "ok": False, "stap": "verlopen", "rt_aanwezig": False,
-                "bericht": f"AT verlopen ({abs(jwt['minuten_resterend']):.0f} min geleden) en geen RT voor auto-refresh. Voer verse AT in.",
-                **jwt,
+                "ok": False, "stap": "verlopen",
+                "bericht": "⚠️ Sporza-sessie verlopen. Klik op de knop hieronder om te vernieuwen.",
             })
     jwt_info = jwt
 

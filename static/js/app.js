@@ -2677,24 +2677,31 @@ async function testSporzaVerbinding() {
     const data = await get('/api/sporza-verbinding-test');
     if (resultDiv) {
       resultDiv.style.display = 'block';
-      const kleur = data.ok ? 'var(--green)' : 'var(--red)';
-      let extra = '';
-      if (data.minuten_resterend > 0)
-        extra = `<div class="text-muted fs-sm">Cookie verloopt over ${data.minuten_resterend} minuten</div>`;
-      if (data.sporza_body)
-        extra += `<div class="text-muted fs-sm" style="margin-top:4px;word-break:break-all">Sporza: ${data.sporza_body}</div>`;
-      if (data.stap === 'refresh_mislukt' || data.stap === 'verlopen' || data.stap === 'geen_at')
-        extra += `
-          <div style="margin-top:12px">
-            <button onclick="openVernieuwAtModal()" class="btn btn-primary" style="width:100%;font-size:0.95rem;padding:10px">
-              🔑 Vernieuw AT — klik hier
+      const verlopen = !data.ok && ['refresh_mislukt','verlopen','geen_at','jwt_ongeldig'].includes(data.stap);
+      if (verlopen) {
+        resultDiv.innerHTML = `
+          <div style="padding:16px;border-radius:10px;border:2px solid #e74c3c;background:rgba(231,76,60,0.1);text-align:center">
+            <div style="color:#e74c3c;font-weight:700;font-size:1.05rem;margin-bottom:14px">
+              ⚠️ Sporza-sessie verlopen
+            </div>
+            <button onclick="openVernieuwAtModal()" class="btn btn-primary"
+                    style="font-size:1rem;padding:12px 24px;width:100%">
+              🔑 Klik hier om te vernieuwen
             </button>
           </div>`;
-      resultDiv.innerHTML = `
-        <div style="padding:10px;border-radius:8px;border:1px solid ${kleur};background:${kleur}22">
-          <div style="color:${kleur};font-weight:600">${data.bericht}</div>
-          ${extra}
-        </div>`;
+      } else {
+        const kleur = data.ok ? 'var(--green)' : 'var(--red)';
+        let extra = '';
+        if (data.minuten_resterend > 0)
+          extra = `<div class="text-muted fs-sm">Cookie verloopt over ${data.minuten_resterend} minuten</div>`;
+        if (data.sporza_body)
+          extra += `<div class="text-muted fs-sm" style="margin-top:4px;word-break:break-all">Sporza: ${data.sporza_body}</div>`;
+        resultDiv.innerHTML = `
+          <div style="padding:10px;border-radius:8px;border:1px solid ${kleur};background:${kleur}22">
+            <div style="color:${kleur};font-weight:600">${data.bericht}</div>
+            ${extra}
+          </div>`;
+      }
     }
   } catch(e) {
     if (resultDiv) {
