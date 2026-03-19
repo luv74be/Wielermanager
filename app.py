@@ -23,27 +23,33 @@ try:
 except ImportError:
     _anthropic = None
 
-# ── ProCyclingStats slug mapping ───────────────────────────────────────────────
-PCS_SLUGS = {
-    'Omloop Het Nieuwsblad':    'omloop-het-nieuwsblad',
-    'Kuurne-Brussel-Kuurne':    'kuurne-brussel-kuurne',
-    'Samyn Classic':            'le-samyn',
-    'Strade Bianche':           'strade-bianche',
-    'Nokere Koerse':            'nokere-koerse',
-    'Bredene Koksijde Classic': 'bredene-koksijde-classic',
-    'Milaan-Sanremo':           'milano-sanremo',
-    'Ronde van Brugge':         'ronde-van-brugge',
-    'E3 Saxo Classic':          'e3-saxo-classic',
-    'Dwars door Vlaanderen':    'dwars-door-vlaanderen',
-    'Ronde van Vlaanderen':     'ronde-van-vlaanderen',
-    'Scheldeprijs':             'scheldeprijs',
-    'Parijs-Roubaix':           'paris-roubaix',
-    'Ronde van Limburg':        'ronde-van-limburg',
-    'Brabantse Pijl':           'la-fleche-brabanconne',
-    'Amstel Gold Race':         'amstel-gold-race',
-    'Waalse Pijl':              'la-fleche-wallonne',
-    'Luik-Bastenaken-Luik':     'liege-bastogne-liege',
-}
+# ── ProCyclingStats slug helpers (DB-driven) ───────────────────────────────────
+# PCS_SLUGS is verwijderd — slugs worden nu uit de koersen-tabel gehaald (kolom pcs_slug).
+# Gebruik _get_pcs_slug_map() voor {slug: naam} lookups,
+# en _get_pcs_slug_list() voor een geordende lijst van slugs.
+# Voor enkelvoudige lookups: koers.get('pcs_slug') na SELECT uit DB.
+
+def _get_pcs_slug_map(conn, sid=None):
+    """Geeft {pcs_slug: koers_naam} dict op basis van DB voor het actieve seizoen."""
+    if sid is None:
+        sid = current_seizoen_id(conn)
+    rows = conn.execute(
+        "SELECT naam, pcs_slug FROM koersen WHERE seizoen_id=? AND pcs_slug IS NOT NULL AND pcs_slug != ''",
+        (sid,)
+    ).fetchall()
+    return {r['pcs_slug']: r['naam'] for r in rows}
+
+
+def _get_pcs_slug_list(conn, sid=None):
+    """Geeft geordende lijst van pcs_slugs voor het actieve seizoen."""
+    if sid is None:
+        sid = current_seizoen_id(conn)
+    rows = conn.execute(
+        "SELECT pcs_slug FROM koersen WHERE seizoen_id=? AND pcs_slug IS NOT NULL AND pcs_slug != '' ORDER BY datum ASC",
+        (sid,)
+    ).fetchall()
+    return [r['pcs_slug'] for r in rows]
+
 
 SPORZA_BASE = 'https://wielermanager.sporza.be'
 
@@ -59,34 +65,25 @@ def _get_sporza_edition(conn, sid=None):
 
 
 def _find_wm_match_id(data_text, gracenote_id):
-    """Zoek het WM match-nummer (1-50) bij een Gracenote race-ID in RSC team.data.
-
-    In de React Flight response staat race-data als: },<matchId>,...,<gracenoteId>,...
-    Het matchId is het kleine volgnummer dat Sporza intern gebruikt in de URL.
-    """
+    """Zoek het WM match-nummer (1-50) bij een Gracenote race-ID in RSC team.data."""
     gid = str(gracenote_id)
     pos = data_text.find(gid)
     if pos < 0:
         return None
-    # Zoek in de 500 tekens vóór het Gracenote ID naar },<num>, patronen
     context = data_text[max(0, pos - 500):pos]
     matches = re.findall(r'},(\d{1,3}),', context)
-    # Filter op redelijke match_id waarden (1-50)
     candidates = [int(m) for m in matches if 1 <= int(m) <= 50]
     if candidates:
-        return candidates[-1]  # dichtstbijzijnde vóór het Gracenote ID
+        return candidates[-1]
     return None
 
 
 def _parse_sporza_riders(data_text):
     """Extract rider ID → fullName from a Sporza WM .data (React Flight) response."""
     riders = {}
-    # Case 1: explicit key-value format (first rider in list has field names)
     kv = re.compile(r'\},(\d+),"firstName","([^"]+)","lastName","([^"]+)","fullName","([^"]+)"')
     for m in kv.finditer(data_text):
         riders[int(m.group(1))] = m.group(4)
-    # Case 2: value-only format – capture up to 5 quoted strings after },<id>,
-    # The fullName is the longest multi-word string in that sequence
     val = re.compile(r'\},(\d+),((?:"[^"]*",?){1,6})')
     for m in val.finditer(data_text):
         rid = int(m.group(1))
@@ -125,12 +122,10 @@ def _fetch_foto_wikipedia(naam):
             pass
         return None
 
-    # Stap 1: direct zoeken op de volledige naam
     foto = _wiki_img(naam)
     if foto:
         return foto
 
-    # Stap 2: Wikipedia-zoekopdracht om de juiste paginatitel te vinden
     try:
         r = _requests.get(
             'https://en.wikipedia.org/w/api.php',
@@ -176,8 +171,6 @@ def _fetch_foto_pcs(naam):
 def _parse_sporza_riders_full(data_text):
     """Extract {id: {naam, ploeg, prijs}} from a Sporza WM .data (React Flight) response."""
     riders = {}
-    # Zoek rider-nodes: },<id>,"firstName","...","lastName","...","fullName","..."
-    # Capture alles daarna tot de volgende node of einde voor extra velden
     node_pat = re.compile(
         r'\},(\d+),"firstName","[^"]+","lastName","[^"]+","fullName","([^"]+)"(.*?)(?=\},\d+,|\Z)',
         re.DOTALL
@@ -187,19 +180,16 @@ def _parse_sporza_riders_full(data_text):
         naam = m.group(2)
         rest = m.group(3)
 
-        # Ploeg: zoek "teamName","..." of "team","..." of "clubName","..."
         ploeg = ''
         tm = re.search(r'"(?:teamName|team|clubName)","([^"]+)"', rest)
         if tm:
             ploeg = tm.group(1)
 
-        # Prijs: zoek "value",<number> of "price",<number> (onquoted)
         prijs = 0.0
         vm = re.search(r'"(?:value|price)",(\d+(?:[.,]\d+)?)', rest)
         if vm:
             prijs = float(vm.group(1).replace(',', '.'))
         else:
-            # Quoted fallback: "value","14.0"
             vq = re.search(r'"(?:value|price)","([^"]+)"', rest)
             if vq:
                 try:
@@ -222,8 +212,15 @@ def _name_match(db_naam, pcs_set, aliases=None):
     db_naam : naam uit lokale DB (bijv. 'Tom Pidcock')
     pcs_set : set van genormaliseerde externe namen (bijv. {'pidcock thomas'})
     aliases : optionele set van genormaliseerde aliassen voor db_naam
+
+    Achternaam-vergelijking werkt op de LAATSTE token na particle-filtering,
+    zodat 'Matteo Milan' niet matcht op 'Milan De Ceuster' (waarbij 'milan'
+    de voornaam is, niet de achternaam).
+
+    PCS startlijsten gebruiken soms 'LASTNAME Firstname' volgorde. In dat geval
+    is de achternaam de EERSTE token — maar alleen als er ook voornaam-overlap is
+    (anders zou 'Milan Menten' fout matchen op 'Matteo Milan').
     """
-    # 1. Alias-match: directe treffer op een bekende alternatieve naam
     if aliases:
         for pcs_norm in pcs_set:
             if pcs_norm in aliases:
@@ -233,26 +230,54 @@ def _name_match(db_naam, pcs_set, aliases=None):
     db_tokens = [t for t in db_norm.split() if t not in _PARTICLES]
     if not db_tokens:
         return False
-    db_surname = db_tokens[-1]  # achternaam = laatste token
+    db_surname = db_tokens[-1]
     db_set = set(db_tokens)
+
     for pcs_norm in pcs_set:
-        pcs_tokens = set(pcs_norm.split()) - _PARTICLES
-        if db_surname not in pcs_tokens:
+        pcs_tokens_list = [t for t in pcs_norm.split() if t not in _PARTICLES]
+        if not pcs_tokens_list:
             continue
-        # Achternaam matcht — ook voornaam moet matchen (tenzij eennamenaam)
-        if len(db_tokens) == 1:
-            return True
-        other_db = db_set - {db_surname}
-        if other_db & pcs_tokens:
-            return True
-        # Fallback: bijnaam / roepnaam (bijv. "Tom" ≈ "Thomas") —
-        # controleer of de beginletter van de voornaam overeenkomt.
-        pcs_firstnames = pcs_tokens - {db_surname}
-        if other_db and pcs_firstnames:
-            db_initials  = {t[0] for t in other_db}
-            pcs_initials = {t[0] for t in pcs_firstnames}
-            if db_initials & pcs_initials:
+        pcs_tokens_set = set(pcs_tokens_list)
+
+        # ── Geval 1: normale volgorde — achternaam is laatste PCS-token ──────
+        pcs_surname = pcs_tokens_list[-1]
+        if db_surname == pcs_surname:
+            if len(db_tokens) == 1:
                 return True
+            other_db = db_set - {db_surname}
+            if other_db & pcs_tokens_set:
+                return True
+            pcs_firstnames = pcs_tokens_set - {db_surname}
+            if other_db and pcs_firstnames:
+                db_initials  = {t[0] for t in other_db}
+                pcs_initials = {t[0] for t in pcs_firstnames}
+                if db_initials & pcs_initials:
+                    return True
+
+        # ── Geval 2: omgekeerde volgorde (PCS startlijst: LASTNAME Firstname) ─
+        # Alleen van toepassing als de achternaam de EERSTE token is én er
+        # voornaam-overlap is — om false positives te vermijden.
+        # Initiaal-fallback is toegestaan TENZIJ de voornaam-initiaal gelijk is
+        # aan de beginletter van de achternaam (dan te ambigu: 'm' voor 'Milan'
+        # zou matchen op 'Menten').
+        if len(pcs_tokens_list) >= 2:
+            pcs_surname_rev = pcs_tokens_list[0]
+            if db_surname == pcs_surname_rev and db_surname != pcs_tokens_list[-1]:
+                if len(db_tokens) == 1:
+                    return True
+                other_db = db_set - {db_surname}
+                if other_db & pcs_tokens_set:
+                    return True
+                pcs_firstnames = pcs_tokens_set - {db_surname}
+                if other_db and pcs_firstnames:
+                    db_initials  = {t[0] for t in other_db}
+                    pcs_initials = {t[0] for t in pcs_firstnames}
+                    # Alleen initiaal-match toestaan als de initiaal NIET gelijk is
+                    # aan de beginletter van de achternaam (vermijdt Matteo→Milan→Menten)
+                    unambiguous = db_initials & pcs_initials - {db_surname[0]}
+                    if unambiguous:
+                        return True
+
     return False
 
 
@@ -266,12 +291,12 @@ def _get_alias_map(conn):
     result = {}
     for row in rows:
         result.setdefault(row['naam'], set()).add(row['alias'])
-    return result  # key = exacte DB naam (bijv. "Tom Pidcock")
+    return result
 
 _PLOEG_SKIP = {'team', 'cycling', 'pro', 'professional', 'continental', 'the', 'and', 'a'}
 
 def _ploeg_match(pcs_norm, db_norm):
-    """True als ploegnamen voldoende overlappen (bijv. 'alpecin-premier tech' vs 'alpecin-deceuninck')."""
+    """True als ploegnamen voldoende overlappen."""
     def words(s):
         return {w for w in re.split(r'[\s\-|]+', s) if len(w) > 2 and w not in _PLOEG_SKIP}
     return bool(words(pcs_norm) & words(db_norm))
@@ -279,22 +304,19 @@ def _ploeg_match(pcs_norm, db_norm):
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-change-in-production')
-app.config['JSON_AS_ASCII'] = False  # Stuur UTF-8 JSON ipv escaped unicode
+app.config['JSON_AS_ASCII'] = False
 app.config['PERMANENT_SESSION_LIFETIME'] = __import__('datetime').timedelta(days=365)
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['SESSION_COOKIE_SECURE'] = True
 
-# ── Authenticatie ──────────────────────────────────────────────────────────────
-APP_PASSWORD = os.environ.get('APP_PASSWORD', '')  # Leeg = geen auth (lokaal dev)
+APP_PASSWORD = os.environ.get('APP_PASSWORD', '')
 
-# User-specifieke instellingen sleutels (opgeslagen als {sleutel}_{user_id})
 _USER_INST_KEYS = frozenset([
     'budget', 'transfer_count',
     'sporza_cookie', 'sporza_cookie_vt', 'sporza_cookie_rt',
 ])
 
 def current_user_id():
-    """Geeft de user_id van de ingelogde gebruiker. In dev-mode altijd 1."""
     uid = session.get('user_id')
     if uid:
         return uid
@@ -303,11 +325,9 @@ def current_user_id():
     return None
 
 def current_seizoen_id(conn=None):
-    """Geeft de seizoen_id voor de huidige sessie. Fallback: eerste actieve seizoen."""
     sid = session.get('seizoen_id')
     if sid:
         return sid
-    # Fallback: eerste actieve seizoen uit DB
     _own = conn is None
     c = conn if conn else get_db()
     try:
@@ -320,7 +340,6 @@ def current_seizoen_id(conn=None):
             c.close()
 
 def _check_auth():
-    """Geeft True als auth uitgeschakeld is (geen APP_PASSWORD) of gebruiker ingelogd is."""
     return current_user_id() is not None
 
 def login_required(f):
@@ -335,10 +354,8 @@ def login_required(f):
 
 @app.before_request
 def require_login():
-    """Bescherm alle routes behalve /login en /static."""
     if request.path in ('/login', '/logout') or request.path.startswith('/static/'):
         return None
-    # Dev-mode: auto-login als user 1 zodat current_user_id() altijd werkt
     if not APP_PASSWORD and not session.get('user_id'):
         session['user_id'] = 1
         session['username'] = 'admin'
@@ -366,7 +383,6 @@ def login():
             session.permanent = True
             return redirect('/')
         error = 'Onbekende gebruiker of verkeerd wachtwoord'
-    # Eenvoudige login pagina
     bg = '#131720'
     accent = '#FF8C00'
     return f'''<!DOCTYPE html>
@@ -423,7 +439,6 @@ def logout():
 
 @app.route('/api/me')
 def api_me():
-    """Geeft de ingelogde gebruiker + huidig seizoen terug."""
     uid = current_user_id()
     if not uid:
         return jsonify({'error': 'Niet ingelogd'}), 401
@@ -446,7 +461,6 @@ def api_me():
 # ── API: Admin gebruikersbeheer ────────────────────────────────────────────────
 
 def _require_admin():
-    """Geeft (None, None) als gebruiker admin is, anders (response, status_code)."""
     uid = current_user_id()
     if not uid:
         return jsonify({'error': 'Niet ingelogd'}), 401
@@ -507,7 +521,6 @@ def admin_update_user(uid):
             (generate_password_hash(d['password']), uid)
         )
     if 'is_admin' in d:
-        # Voorkom dat admin zichzelf admin-rechten afneemt
         if uid != current_user_id():
             conn.execute("UPDATE users SET is_admin=? WHERE id=?", (int(bool(d['is_admin'])), uid))
     conn.commit()
@@ -533,7 +546,6 @@ def admin_delete_user(uid):
 
 @app.route('/api/seizoenen', methods=['GET'])
 def get_seizoenen():
-    """Lijst van actieve seizoenen (voor alle gebruikers)."""
     conn = get_db()
     rows = conn.execute(
         "SELECT id, naam, sporza_edition, actief FROM seizoenen WHERE actief=1 ORDER BY id"
@@ -544,7 +556,6 @@ def get_seizoenen():
 
 @app.route('/api/switch-seizoen', methods=['POST'])
 def switch_seizoen():
-    """Wissel het actieve seizoen voor de huidige sessie."""
     d = request.json or {}
     sid = d.get('seizoen_id')
     if not sid:
@@ -612,7 +623,6 @@ def admin_delete_seizoen(sid):
     err, code = _require_admin()
     if err: return err, code
     conn = get_db()
-    # Controleer of er al data aan hangt
     has_data = conn.execute(
         "SELECT 1 FROM mijn_ploeg WHERE seizoen_id=? LIMIT 1", (sid,)
     ).fetchone()
@@ -629,11 +639,6 @@ def admin_delete_seizoen(sid):
 
 @app.route('/api/admin/seizoenen/<int:sid>/seed', methods=['POST'])
 def admin_seed_seizoen(sid):
-    """Seed standaard renners & koersen voor een seizoen (alleen als nog leeg).
-    Renners worden opgehaald van de Sporza cyclists API voor het correcte edition
-    (bv. vrjr-v-26 voor vrouwen, vrjr-m-26 voor mannen). Alleen bij API-fout
-    wordt de statische fallback-lijst gebruikt.
-    """
     err, code = _require_admin()
     if err: return err, code
     conn = get_db()
@@ -642,7 +647,6 @@ def admin_seed_seizoen(sid):
         conn.close()
         return jsonify({'error': 'Seizoen niet gevonden'}), 404
 
-    # ── Renners: haal op via Sporza cyclists API voor dit seizoen ─────────────
     r_count_before = conn.execute(
         "SELECT COUNT(*) FROM renners WHERE seizoen_id=?", (sid,)
     ).fetchone()[0]
@@ -697,13 +701,11 @@ def admin_seed_seizoen(sid):
                 app.logger.warning(f"Sporza cyclists API fout bij seed (edition={edition}): {e}")
 
         if not sporza_renners_loaded:
-            # Fallback: statische lijst (voornamelijk mannelijke klassieke renners)
             app.logger.warning(
                 f"Seed seizoen {sid}: Sporza API niet beschikbaar, gebruik statische fallback"
             )
             seed_renners(conn, sid)
 
-    # ── Koersen: altijd via statische lijst (geen Sporza-bron beschikbaar) ────
     seed_koersen(conn, sid)
 
     r_count = conn.execute("SELECT COUNT(*) FROM renners WHERE seizoen_id=?", (sid,)).fetchone()[0]
@@ -719,16 +721,6 @@ def admin_seed_seizoen(sid):
 
 @app.route('/api/admin/renners/sync-sporza', methods=['POST'])
 def admin_sync_renners_sporza():
-    """Haal alle renners op van Sporza WM voor het actieve seizoen.
-
-    Voor elke renner in de Sporza API:
-      - Bestaand (naam-match): update ploeg, prijs en totaal_punten indien gewijzigd.
-      - Onbestaand: voeg toe als nieuwe renner.
-
-    Naam-matching verloopt in twee stappen:
-      1. Exacte genormaliseerde match (accenten/hoofdletters genegeerd).
-      2. Fallback via _name_match() (achternaam + voornaam-initiaal).
-    """
     err, code = _require_admin()
     if err: return err, code
 
@@ -740,7 +732,6 @@ def admin_sync_renners_sporza():
         conn.close()
         return jsonify({'error': f'Geen geldig Sporza edition ingesteld voor dit seizoen'}), 400
 
-    # ── 1. Ophalen van Sporza ──────────────────────────────────────────────────
     try:
         scraper = cloudscraper.create_scraper()
         url = f"{SPORZA_BASE}/api/{edition}/cyclists"
@@ -757,14 +748,11 @@ def admin_sync_renners_sporza():
         conn.close()
         return jsonify({'error': 'Sporza stuurde een lege rennerlijst terug'}), 404
 
-    # ── 2. Bestaande renners laden ─────────────────────────────────────────────
     bestaande = conn.execute(
         "SELECT id, naam, ploeg, prijs, totaal_punten FROM renners WHERE seizoen_id=?", (sid,)
     ).fetchall()
 
-    # Exacte norm → id
     norm_to_id = {_norm(r['naam']): r['id'] for r in bestaande}
-    # id → dict voor snelle opzoek bij updates
     id_to_row  = {r['id']: r for r in bestaande}
 
     def _sporza_rol(c):
@@ -786,19 +774,16 @@ def admin_sync_renners_sporza():
         prijs  = float(c.get('price') or 0)
         punten = int(c.get('totalBasePoints') or 0)
 
-        # ── Naam-matching ──────────────────────────────────────────────────────
         norm = _norm(naam)
         renner_id = norm_to_id.get(norm)
 
         if renner_id is None:
-            # Fallback: achternaam + initiaal matching
             sporza_set = {norm}
             for db_r in bestaande:
                 if _name_match(db_r['naam'], sporza_set):
                     renner_id = db_r['id']
                     break
 
-        # ── Update of aanmaken ─────────────────────────────────────────────────
         if renner_id is not None:
             oud = id_to_row[renner_id]
             if oud['ploeg'] != ploeg or float(oud['prijs']) != prijs or int(oud['totaal_punten'] or 0) != punten:
@@ -835,7 +820,6 @@ def admin_sync_renners_sporza():
 
 @app.route('/api/admin/ploeg/budget-debug', methods=['GET'])
 def admin_ploeg_budget_debug():
-    """Toon voor alle users/seizoenen de renners in hun ploeg met aangeschaft_prijs vs huidige prijs."""
     err, code = _require_admin()
     if err: return err, code
 
@@ -855,7 +839,6 @@ def admin_ploeg_budget_debug():
         ORDER BY u.username, sz.naam, r.prijs DESC
     """).fetchall()
 
-    # Groepeer per user+seizoen
     uit = {}
     for row in rows:
         key = f"{row['username']} — {row['seizoen']}"
@@ -893,11 +876,6 @@ def admin_ploeg_budget_debug():
 
 @app.route('/api/admin/ploeg/normalize-budget', methods=['POST'])
 def admin_ploeg_normalize_budget():
-    """Schaal aangeschaft_prijs proportioneel zodat de ploegkost gelijk is aan het budget.
-
-    Body: { "user_id": <int>, "seizoen_id": <int> }
-    Als user_id ontbreekt → alle users van dat seizoen.
-    """
     err, code = _require_admin()
     if err: return err, code
 
@@ -906,7 +884,6 @@ def admin_ploeg_normalize_budget():
     sid = int(data.get('seizoen_id') or current_seizoen_id(conn))
     uid_filter = data.get('user_id')
 
-    # Haal users op die een ploeg hebben in dit seizoen
     if uid_filter:
         users = [uid_filter]
     else:
@@ -955,10 +932,6 @@ def admin_ploeg_normalize_budget():
 
 @app.route('/api/admin/ploeg/set-aangeschaft-prijs', methods=['POST'])
 def admin_set_aangeschaft_prijs():
-    """Stel aangeschaft_prijs in voor één renner in een ploeg.
-
-    Body: { "user_id": <int>, "seizoen_id": <int>, "renner_id": <int>, "prijs": <float> }
-    """
     err, code = _require_admin()
     if err: return err, code
 
@@ -983,7 +956,6 @@ def admin_set_aangeschaft_prijs():
 
 @app.route('/sw.js')
 def service_worker():
-    """Serveer de service worker vanuit de root zodat de scope '/' is."""
     import flask
     resp = flask.send_from_directory(app.static_folder, 'sw.js',
                                      mimetype='application/javascript')
@@ -994,13 +966,11 @@ def service_worker():
 
 @app.after_request
 def add_cors_headers(response):
-    """Sta cross-origin requests toe van Sporza + forceer UTF-8 voor alle JSON responses."""
     origin = request.headers.get('Origin', '')
     if 'sporza.be' in origin or 'localhost' in origin:
         response.headers['Access-Control-Allow-Origin'] = origin
         response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
         response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-    # Forceer UTF-8 encoding voor JSON responses (fix voor Werkzeug 3.x op Linux)
     if response.content_type.startswith('application/json'):
         data = response.get_data(as_text=True)
         response.set_data(data.encode('utf-8'))
@@ -1017,7 +987,6 @@ def sporza_session_preflight():
     return resp
 
 def _static_version():
-    """Geeft de maximale mtime van de JS/CSS bestanden terug als versiestring."""
     base = os.path.dirname(__file__)
     files = [
         os.path.join(base, 'static', 'js', 'app.js'),
@@ -1059,7 +1028,7 @@ def index():
     return render_template("index.html")
 
 
-# ── API: Server info (LAN-adres voor QR-code) ─────────────────────────────────
+# ── API: Server info ──────────────────────────────────────────────────────────
 
 @app.route("/api/server-info")
 def server_info():
@@ -1073,7 +1042,6 @@ def server_info():
         lan_ip = "127.0.0.1"
     url = f"http://{lan_ip}:5050"
 
-    # Genereer QR-code als base64 PNG
     try:
         import qrcode
         qr = qrcode.QRCode(box_size=6, border=2)
@@ -1131,12 +1099,10 @@ def get_puntentelling():
 
 @app.route("/api/renners/opzoeken")
 def opzoeken_renner():
-    """Zoek renners op Sporza WM via de publieke REST API."""
     zoek = request.args.get("naam", "").strip()
     if len(zoek) < 2:
         return jsonify({"error": "Zoekterm te kort (min. 2 tekens)"}), 400
 
-    # Cookie is optioneel — endpoint /api/{edition}/cyclists is publiek toegankelijk
     conn = get_db()
     sid = current_seizoen_id(conn)
     edition = _get_sporza_edition(conn, sid)
@@ -1167,7 +1133,6 @@ def opzoeken_renner():
         naam = c.get("fullName", "")
         if zoek_norm in _norm(naam):
             team = c.get("team") or {}
-            # Probeer foto uit Sporza-data te halen
             foto = (c.get('photo') or c.get('image') or c.get('profileImage') or
                     c.get('profilePicture') or c.get('picture') or c.get('photoUrl') or '')
             resultaten.append({
@@ -1183,7 +1148,6 @@ def opzoeken_renner():
 
 @app.route("/api/renners/opzoeken-foto")
 def opzoeken_renner_foto():
-    """Zoek een foto op via Wikipedia (en PCS als fallback) voor een gegeven rennersnaam."""
     naam = request.args.get("naam", "").strip()
     if not naam:
         return jsonify({"foto": None})
@@ -1195,7 +1159,7 @@ def opzoeken_renner_foto():
 
 @app.route("/api/renners/<int:rid>/update", methods=["POST"])
 def update_renner_volledig(rid):
-    """Update foto/ploeg/prijs en geef 2025-historiek terug (geen impact op punten)."""
+    """Update foto/ploeg/prijs en geef historiek terug (geen impact op punten)."""
     conn = get_db()
     renner = conn.execute("SELECT * FROM renners WHERE id=?", (rid,)).fetchone()
     if not renner:
@@ -1206,6 +1170,11 @@ def update_renner_volledig(rid):
     oud_foto  = renner["foto"]
     oud_ploeg = renner["ploeg"]
     oud_prijs = renner["prijs"]
+
+    # Haal pcs_slug_map op voor historiek matching
+    sid = current_seizoen_id(conn)
+    wm_slug_to_naam = _get_pcs_slug_map(conn, sid)
+    pcs_slug_list   = _get_pcs_slug_list(conn, sid)
     conn.close()
 
     wijzigingen = {}
@@ -1243,29 +1212,23 @@ def update_renner_volledig(rid):
     wijzigingen["prijs"] = {"oud": oud_prijs, "nieuw": nieuwe_prijs,
                              "gewijzigd": nieuwe_prijs != oud_prijs}
 
-    # ── 3. Historiek 2025 via PCS rider-pagina (enkel weergave, geen DB-schrijf) ──
-    # Één request voor alle resultaten van het vorige seizoen.
+    # ── 3. Historiek 2025 via PCS rider-pagina ────────────────────────────────
     historiek_2025 = []
     pcs_slug = _norm(naam).replace(' ', '-')
     pcs_rider_url = f"https://www.procyclingstats.com/rider/{pcs_slug}/2025"
-    wm_slug_to_naam = {v: k for k, v in PCS_SLUGS.items()}
 
     def _is_pcs_not_found(s):
-        """True als de PCS-pagina een 'Page not found' of lege profielpagina is."""
         title = s.title.string if s.title else ""
         return "not found" in title.lower() or "404" in title
 
     def _pcs_zoek_slug(db_naam):
-        """Zoek de correcte PCS rider-slug door race-pagina's te scrapen.
-        PCS search geeft JS-rendered resultaten terug die niet parserbaar zijn,
-        dus gaan we de rider-link zoeken op bekende race-pagina's van 2025."""
         tokens = _norm(db_naam).split()
         if not tokens:
             return None
-        achternaam = tokens[-1]          # bijv. "pidcock"
-        initiaal   = tokens[0][0] if len(tokens) > 1 else None  # bijv. "t"
+        achternaam = tokens[-1]
+        initiaal   = tokens[0][0] if len(tokens) > 1 else None
 
-        for race_slug in list(PCS_SLUGS.values())[:8]:
+        for race_slug in pcs_slug_list[:8]:
             try:
                 race_url = f"https://www.procyclingstats.com/race/{race_slug}/2025"
                 r = scraper.get(race_url, timeout=15)
@@ -1276,11 +1239,9 @@ def update_renner_volledig(rid):
                     href = a["href"]
                     if not href.startswith("rider/"):
                         continue
-                    # slug delen: "rider/thomas-pidcock" → ["thomas", "pidcock"]
                     slug_delen = href.replace("rider/", "").split("/")[0].split("-")
                     if achternaam not in slug_delen:
                         continue
-                    # Controleer initiaal voornaam als extra zekerheid
                     if initiaal and not any(
                         p.startswith(initiaal) for p in slug_delen if p != achternaam
                     ):
@@ -1294,7 +1255,6 @@ def update_renner_volledig(rid):
         resp = scraper.get(pcs_rider_url, timeout=20)
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, "html.parser")
-            # Fallback: slug niet gevonden → zoek via PCS search
             if _is_pcs_not_found(soup):
                 gevonden_slug = _pcs_zoek_slug(naam)
                 if gevonden_slug and gevonden_slug != pcs_slug:
@@ -1307,10 +1267,8 @@ def update_renner_volledig(rid):
             for row in soup.select("ul.results li, table.results tr, .rdrResults tr, table tr"):
                 cells = row.find_all(["td", "li"])
                 if not cells:
-                    # <li> zelf kan een race zijn
                     cells = [row]
 
-                # Zoek een race-link die overeenkomt met een wielermanager-race
                 race_naam = None
                 for cell in cells:
                     for a in cell.find_all("a", href=True):
@@ -1324,7 +1282,6 @@ def update_renner_volledig(rid):
                 if not race_naam:
                     continue
 
-                # Positie: eerste cel met een getal
                 positie = None
                 for cell in cells:
                     txt = cell.get_text(strip=True)
@@ -1336,7 +1293,6 @@ def update_renner_volledig(rid):
                     except ValueError:
                         pass
 
-                # Datum: zoek patroon DD.MM of DD-MM in de rij
                 datum_str = None
                 for cell in cells:
                     txt = cell.get_text(strip=True)
@@ -1351,19 +1307,19 @@ def update_renner_volledig(rid):
                 })
 
     except Exception:
-        pass  # historiek blijft leeg als PCS niet bereikbaar is
+        pass
 
-    # Deduplicate (soms staat dezelfde race meerdere keren)
     seen = set()
     historiek_uniek = []
     for h in historiek_2025:
         if h["koers"] not in seen:
             seen.add(h["koers"])
             historiek_uniek.append(h)
-    historiek_2025 = sorted(historiek_uniek, key=lambda h: list(PCS_SLUGS.keys()).index(h["koers"])
-                            if h["koers"] in PCS_SLUGS else 99)
+    historiek_2025 = sorted(historiek_uniek,
+                            key=lambda h: pcs_slug_list.index(wm_slug_to_naam.get(h["koers"], ''))
+                            if h["koers"] in wm_slug_to_naam.values() else 99)
 
-    # ── 4. Renner bijwerken in DB (foto / ploeg / prijs + historiek) ─────────
+    # ── 4. Renner bijwerken in DB ─────────────────────────────────────────────
     conn2 = get_db()
     update_fields, update_vals = [], []
     foto_opslaan = nieuwe_foto or oud_foto
@@ -1377,7 +1333,6 @@ def update_renner_volledig(rid):
         update_vals.append(rid)
         conn2.execute(f"UPDATE renners SET {','.join(update_fields)} WHERE id=?", update_vals)
 
-    # Historiek 2025 persisteren (vervang vorige opgeslagen data voor dit seizoen)
     if historiek_2025:
         conn2.execute(
             "DELETE FROM historiek_renner WHERE renner_id=? AND seizoen=2025", (rid,)
@@ -1402,19 +1357,21 @@ def update_renner_volledig(rid):
 
 @app.route("/api/renners/<int:rid>/historiek", methods=["POST"])
 def laad_renner_historiek(rid):
-    """Haal alleen de 2025-historiek op van PCS en sla op in DB (geen foto/ploeg/prijs update)."""
+    """Haal alleen de 2025-historiek op van PCS en sla op in DB."""
     conn = get_db()
     renner = conn.execute("SELECT naam FROM renners WHERE id=?", (rid,)).fetchone()
     if not renner:
         conn.close()
         return jsonify({"error": "Renner niet gevonden"}), 404
     naam = renner["naam"]
+    sid = current_seizoen_id(conn)
+    wm_slug_to_naam = _get_pcs_slug_map(conn, sid)
+    pcs_slug_list   = _get_pcs_slug_list(conn, sid)
     conn.close()
 
     scraper = cloudscraper.create_scraper()
     pcs_slug = _norm(naam).replace(' ', '-')
     pcs_rider_url = f"https://www.procyclingstats.com/rider/{pcs_slug}/2025"
-    wm_slug_to_naam = {v: k for k, v in PCS_SLUGS.items()}
     historiek_2025 = []
 
     def _is_pcs_not_found(s):
@@ -1427,7 +1384,7 @@ def laad_renner_historiek(rid):
             return None
         achternaam = tokens[-1]
         initiaal   = tokens[0][0] if len(tokens) > 1 else None
-        for race_slug in list(PCS_SLUGS.values())[:8]:
+        for race_slug in pcs_slug_list[:8]:
             try:
                 r = scraper.get(f"https://www.procyclingstats.com/race/{race_slug}/2025", timeout=15)
                 if r.status_code != 200:
@@ -1492,18 +1449,17 @@ def laad_renner_historiek(rid):
     except Exception:
         pass
 
-    # Deduplicate & sorteer
     seen = set()
     historiek_uniek = []
     for h in historiek_2025:
         if h["koers"] not in seen:
             seen.add(h["koers"])
             historiek_uniek.append(h)
-    pcs_volgorde = list(PCS_SLUGS.keys())
     historiek_2025 = sorted(historiek_uniek,
-                            key=lambda h: pcs_volgorde.index(h["koers"]) if h["koers"] in pcs_volgorde else 99)
+                            key=lambda h: pcs_slug_list.index(
+                                next((s for s, n in wm_slug_to_naam.items() if n == h["koers"]), '')
+                            ) if h["koers"] in wm_slug_to_naam.values() else 99)
 
-    # Opslaan in DB
     if historiek_2025:
         conn2 = get_db()
         conn2.execute("DELETE FROM historiek_renner WHERE renner_id=? AND seizoen=2025", (rid,))
@@ -1543,7 +1499,6 @@ def add_renner():
         abort(400, "Verplichte velden: naam, ploeg, rol, prijs")
     foto = (d.get("foto") or "").strip()
     conn = get_db()
-    # Duplicaat-controle (case-insensitive, enkel actieve renners)
     bestaand = conn.execute(
         "SELECT id FROM renners WHERE lower(trim(naam)) = lower(trim(?)) AND actief = 1",
         (d["naam"],)
@@ -1600,7 +1555,6 @@ def upload_renner_foto(rid):
         abort(400, "Ongeldig bestandstype (gebruik jpg, png, gif of webp)")
     ext = f.filename.rsplit('.', 1)[1].lower()
     filename = f"{rid}.{ext}"
-    # Verwijder eventuele oude foto met andere extensie
     for old_ext in ALLOWED_EXTENSIONS:
         old_path = os.path.join(UPLOAD_FOLDER, f"{rid}.{old_ext}")
         if os.path.exists(old_path) and old_ext != ext:
@@ -1628,7 +1582,6 @@ def get_renner_detail(rid):
         "SELECT 1 FROM mijn_ploeg WHERE renner_id=? AND user_id=? AND seizoen_id=?", (rid, uid, sid)
     ).fetchone()
 
-    # Wedstrijden waar renner in opstelling of resultaten staat
     koersen = conn.execute("""
         SELECT k.id, k.naam, k.datum, k.soort, k.afgelopen,
                o.is_kopman,
@@ -1645,7 +1598,6 @@ def get_renner_detail(rid):
         ORDER BY k.datum ASC
     """, (uid, rid, uid, rid, uid)).fetchall()
 
-    # Transfer info: wanneer via transfer ingekomen
     transfer_in = conn.execute("""
         SELECT t.datum, t.kosten,
                ruit.naam as renner_uit_naam, ruit.prijs as prijs_uit
@@ -1659,7 +1611,6 @@ def get_renner_detail(rid):
         "SELECT aangeschaft_op FROM mijn_ploeg WHERE renner_id = ? AND user_id = ?", (rid, uid)
     ).fetchone()
 
-    # Historiek vorig seizoen (opgeslagen via Update-knop)
     historiek_rows = conn.execute("""
         SELECT koers_naam, positie, datum
         FROM historiek_renner
@@ -1667,15 +1618,17 @@ def get_renner_detail(rid):
         ORDER BY ROWID ASC
     """, (rid,)).fetchall()
 
-    # Sorteer op volgorde van PCS_SLUGS (seizoensvolgorde)
-    pcs_volgorde = list(PCS_SLUGS.keys())
+    # Sorteer op volgorde van pcs_slug_list (seizoensvolgorde)
+    pcs_slug_list = _get_pcs_slug_list(conn, sid)
+    wm_slug_to_naam = _get_pcs_slug_map(conn, sid)
+    naam_to_slug = {v: k for k, v in wm_slug_to_naam.items()}
     historiek_2025 = sorted(
         [{"koers": r["koers_naam"], "positie": r["positie"], "datum": r["datum"]}
          for r in historiek_rows],
-        key=lambda h: pcs_volgorde.index(h["koers"]) if h["koers"] in pcs_volgorde else 99
+        key=lambda h: pcs_slug_list.index(naam_to_slug[h["koers"]])
+        if h["koers"] in naam_to_slug and naam_to_slug[h["koers"]] in pcs_slug_list else 99
     )
 
-    # Naam-aliassen
     aliassen = conn.execute(
         "SELECT id, alias FROM renner_aliassen WHERE renner_id=? ORDER BY id", (rid,)
     ).fetchall()
@@ -1740,8 +1693,7 @@ def delete_renner_alias(aid):
 
 @app.route("/api/renners/<int:rid>/pcs-wedstrijden", methods=["GET"])
 def renner_pcs_wedstrijden(rid):
-    """Haal via PCS op aan welke wedstrijden een renner deelneemt,
-    gefilterd op de koersen die in de wielermanager staan."""
+    """Haal via PCS op aan welke wedstrijden een renner deelneemt."""
     conn = get_db()
     renner = conn.execute("SELECT naam FROM renners WHERE id=?", (rid,)).fetchone()
     if not renner:
@@ -1749,11 +1701,13 @@ def renner_pcs_wedstrijden(rid):
         return jsonify({"error": "Renner niet gevonden"}), 404
     naam = renner["naam"]
 
-    # Alle wielermanager-koersen ophalen
-    koersen = conn.execute("SELECT naam, datum, soort, afgelopen FROM koersen ORDER BY datum").fetchall()
+    sid = current_seizoen_id(conn)
+    koersen = conn.execute(
+        "SELECT naam, datum, soort, afgelopen, pcs_slug FROM koersen WHERE seizoen_id=? ORDER BY datum",
+        (sid,)
+    ).fetchall()
     conn.close()
 
-    # PCS slug afleiden uit de rennernaam (zelfde methode als _fetch_foto_pcs)
     slug = _norm(naam).replace(" ", "-")
     pcs_url = f"https://www.procyclingstats.com/rider/{slug}/2026"
 
@@ -1770,9 +1724,6 @@ def renner_pcs_wedstrijden(rid):
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
-    # PCS gebruikt twee linkpatronen voor 2026-wedstrijden van een renner:
-    #   rider-in-race/{renner-slug}/{race-slug}/2026   → renner staat geregistreerd
-    #   race/{race-slug}/2026/...                      → resultaat/startlijst
     rider_in_race_re = re.compile(r"rider-in-race/[^/]+/([^/]+)/2026")
     race_2026_re     = re.compile(r"^/?race/([^/]+)/2026")
     pcs_slugs_gevonden = set()
@@ -1786,11 +1737,10 @@ def renner_pcs_wedstrijden(rid):
         if m:
             pcs_slugs_gevonden.add(m.group(1))
 
-    # Filter de wielermanager-koersen op basis van PCS_SLUGS
     wedstrijden = []
     for k in koersen:
-        pcs_slug = PCS_SLUGS.get(k["naam"])
-        if pcs_slug and pcs_slug in pcs_slugs_gevonden:
+        koers_pcs_slug = k["pcs_slug"]
+        if koers_pcs_slug and koers_pcs_slug in pcs_slugs_gevonden:
             wedstrijden.append({
                 "naam":      k["naam"],
                 "datum":     k["datum"],
@@ -1854,10 +1804,8 @@ def get_mijn_ploeg():
 
 
 def _get_user_inst_val(conn, key, uid=None, default=None, sid=None):
-    """Haal een user-specifieke instellingen waarde op (met fallback naar ongesuffixte key)."""
     if uid is None: uid = current_user_id() or 1
     if sid is None: sid = current_seizoen_id(conn)
-    # Try {key}_{uid}_{sid} first, then {key}_{uid}, then {key}
     for sleutel in [f'{key}_{uid}_{sid}', f'{key}_{uid}', key]:
         row = conn.execute("SELECT waarde FROM instellingen WHERE sleutel=?", (sleutel,)).fetchone()
         if row:
@@ -1866,7 +1814,6 @@ def _get_user_inst_val(conn, key, uid=None, default=None, sid=None):
 
 
 def _set_user_inst_val(conn, key, val, uid=None, sid=None):
-    """Sla een user-specifieke instellingen waarde op als {key}_{uid}_{sid}."""
     if uid is None: uid = current_user_id() or 1
     if sid is None: sid = current_seizoen_id(conn)
     sleutel = f'{key}_{uid}_{sid}'
@@ -1874,17 +1821,13 @@ def _set_user_inst_val(conn, key, val, uid=None, sid=None):
 
 
 def _get_inst(conn, uid=None, sid=None):
-    """Alle instellingen voor de huidige gebruiker (user-specifieke waarden overschrijven shared)."""
     if uid is None:
         uid = current_user_id() or 1
     if sid is None:
         sid = current_seizoen_id(conn)
     all_rows = {r['sleutel']: r['waarde'] for r in conn.execute("SELECT sleutel, waarde FROM instellingen").fetchall()}
     result = {}
-    suffix = f"_{uid}"
-    sid_suffix = f"_{uid}_{sid}"
     for key, val in all_rows.items():
-        # Skip keys that match pattern {base_key}_{anything} — handled separately via _get_user_inst_val
         skip = False
         for base_key in _USER_INST_KEYS:
             if key.startswith(f"{base_key}_"):
@@ -1893,7 +1836,6 @@ def _get_inst(conn, uid=None, sid=None):
         if skip:
             continue
         result[key] = val
-    # Now overlay user-specific values using _get_user_inst_val (which handles sid fallback)
     for k in _USER_INST_KEYS:
         val = _get_user_inst_val(conn, k, uid, sid=sid)
         if val is not None:
@@ -2383,12 +2325,12 @@ def set_opstelling(kid):
 def get_deelnemers(kid):
     conn = get_db()
     sid = current_seizoen_id(conn)
-    koers = conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone()
+    koers = dict(conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone() or {})
     if not koers:
         conn.close()
         return jsonify({"error": "Koers niet gevonden"}), 404
 
-    slug = PCS_SLUGS.get(koers['naam'])
+    slug = koers['pcs_slug']
     if not slug:
         conn.close()
         return jsonify({"error": f"Geen ProCyclingStats koppeling voor '{koers['naam']}'"}), 404
@@ -2403,8 +2345,6 @@ def get_deelnemers(kid):
     conn.close()
 
     year = koers['datum'][:4]
-    # For completed races use the results page (actual starters only),
-    # for upcoming/ongoing races use the startlist (registered riders).
     is_past = bool(koers['afgelopen'])
     if is_past:
         url = f"https://www.procyclingstats.com/race/{slug}/{year}/result"
@@ -2430,16 +2370,10 @@ def get_deelnemers(kid):
 
     soup = BeautifulSoup(resp.text, 'html.parser')
     pcs_names_norm = set()
-    # PCS uses relative hrefs: href="rider/..."
     for a in soup.select('a[href^="rider/"]'):
         text = a.get_text(strip=True)
         if not text or len(text) < 3:
             continue
-        # PCS startlist entries: "LASTNAME Firstname" — first word is ALL CAPS.
-        # Filter out non-startlist sections (favorites, related riders, etc.)
-        # which use normal Title Case.
-        # Strip non-ASCII before isupper() check — anders falen namen met ß, Ć, etc.
-        # bijv. "GROßSCHARTNER" → .isupper() = False zonder deze fix.
         first_word = text.split()[0]
         first_word_ascii = first_word.encode('ascii', 'ignore').decode('ascii')
         if not first_word_ascii or not first_word_ascii.isupper():
@@ -2472,12 +2406,12 @@ def get_deelnemers(kid):
 def get_uitslag_pcs(kid):
     conn = get_db()
     sid = current_seizoen_id(conn)
-    koers = conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone()
+    koers = dict(conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone() or {})
     if not koers:
         conn.close()
         return jsonify({"error": "Koers niet gevonden"}), 404
 
-    slug = PCS_SLUGS.get(koers['naam'])
+    slug = koers['pcs_slug']
     if not slug:
         conn.close()
         return jsonify({"error": f"Geen ProCyclingStats koppeling voor '{koers['naam']}'"}), 404
@@ -2516,7 +2450,6 @@ def get_uitslag_pcs(kid):
 
     soup = BeautifulSoup(resp.text, 'html.parser')
 
-    # Parse results table: rows with numeric position + rider link
     pcs_top30 = []
     for row in soup.select('table tr'):
         cells = row.find_all('td')
@@ -2532,13 +2465,25 @@ def get_uitslag_pcs(kid):
         if not rider_link:
             continue
         rider_name = rider_link.get_text(separator=' ', strip=True)
+        # PCS toont namen soms als "LASTNAME Firstname" (bijv. "Menten Milan").
+        # De rider-slug in href="rider/milan-menten" heeft altijd Firstname-Lastname
+        # volgorde (slug = genormaliseerde naam in correcte volgorde).
+        # Gebruik de slug voor matching zodat achternaam altijd de laatste token is.
+        rider_href = rider_link.get('href', '')
+        slug_part = rider_href.replace('rider/', '').split('/')[0]
+        rider_name_norm = slug_part.replace('-', ' ')  # "milan-menten" -> "milan menten"
         team_name = ''
         for cell in cells[1:]:
             tl = cell.find('a', href=lambda h: h and h.startswith('team/'))
             if tl:
                 team_name = tl.get_text(strip=True)
                 break
-        pcs_top30.append({'positie': pos, 'naam': rider_name, 'ploeg_pcs': team_name})
+        pcs_top30.append({
+            'positie': pos,
+            'naam': rider_name,          # weergavenaam voor UI
+            'naam_norm': rider_name_norm, # slug-gebaseerd voor matching
+            'ploeg_pcs': team_name,
+        })
 
     if not pcs_top30:
         return jsonify({"error": "Geen uitslag gevonden op de PCS-pagina (koers mogelijk nog niet gereden)."}), 404
@@ -2550,9 +2495,18 @@ def get_uitslag_pcs(kid):
     for r in ploeg:
         pos = None
         for pcs in pcs_top30:
-            if _name_match(r['naam'], {_norm(pcs['naam'])}):
+            # Gebruik naam_norm (uit rider-slug) voor matching — correct Firstname Lastname
+            # Dit voorkomt dat "Menten Milan" (weergavenaam) matcht op db "Matteo Milan"
+            if _name_match(r['naam'], {pcs['naam_norm']}):
+                app.logger.warning(
+                    f"[UITSLAG MATCH] db='{r['naam']}' -> pcs='{pcs['naam']}' (slug: {pcs['naam_norm']}) pos={pcs['positie']}"
+                )
                 pos = pcs['positie']
                 break
+        if pos is None:
+            app.logger.warning(
+                f"[UITSLAG GEEN MATCH] db='{r['naam']}' niet gevonden in top30"
+            )
         in_ops = r['id'] in opstelling_ids
         is_kop = r['id'] == kopman_id
 
@@ -2560,7 +2514,6 @@ def get_uitslag_pcs(kid):
         bns_kop = kopman_bonus(pos) if pos and is_kop and in_ops else 0
 
         renner_ploeg_norm = _norm(r['renner_ploeg'])
-        # Ploegmaat bonus: team matcht winnaar EN renner is niet zelf de winnaar
         is_ploegmaat = bool(
             winnaar_ploeg_pcs and pos != 1 and in_ops and
             _ploeg_match(winnaar_ploeg_pcs, renner_ploeg_norm)
@@ -2599,12 +2552,12 @@ def get_uitslag_pcs(kid):
 @app.route("/api/koersen/<int:kid>/fetch-profiel", methods=["POST"])
 def fetch_profiel(kid):
     conn = get_db()
-    koers = conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone()
+    koers = dict(conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone() or {})
     if not koers:
         conn.close()
         return jsonify({"error": "Koers niet gevonden"}), 404
 
-    slug = PCS_SLUGS.get(koers['naam'])
+    slug = koers['pcs_slug']
     if not slug:
         conn.close()
         return jsonify({"error": f"Geen PCS-koppeling voor '{koers['naam']}'"}), 404
@@ -2628,14 +2581,10 @@ def fetch_profiel(kid):
     hoogtemeters = None
     profiel_url = None
 
-    # ── Afstand + hoogtemeters uit PCS li > div.title structuur ──
-    # PCS-structuur: <li><div class="title">Total distance:</div>203</li>
-    # Waarde staat als tekstnode in de li, NIET in een aparte div
     for li in soup.find_all('li'):
         title_div = li.find('div', class_='title')
         if not title_div:
             continue
-        # get_text(separator='|') geeft "Total distance:|203"
         parts = li.get_text(separator='|', strip=True).split('|')
         if len(parts) < 2:
             continue
@@ -2656,7 +2605,6 @@ def fetch_profiel(kid):
                 except ValueError:
                     pass
 
-    # Fallback: regex op volledige paginatekst als structuur afwijkt
     if afstand is None:
         m = re.search(r'[Dd]istance[:\s]{0,5}([\d]+(?:[.,]\d+)?)(?:\s*km?)?', resp.text)
         if m:
@@ -2672,9 +2620,6 @@ def fetch_profiel(kid):
             except ValueError:
                 pass
 
-    # ── Profielfoto-URL ──
-    # PCS heeft twee soorten: route-kaart (*-map.jpg) en hoogteprofiel (*-profile*.jpg)
-    # Voorkeur: hoogteprofiel; fallback: routekaart
     map_url = None
     for img in soup.find_all('img'):
         src = img.get('src', '') or img.get('data-src', '')
@@ -2684,14 +2629,13 @@ def fetch_profiel(kid):
         if not src.startswith('http'):
             src = 'https://www.procyclingstats.com/' + src.lstrip('/')
         if 'profile' in filename:
-            profiel_url = src   # hoogteprofiel gevonden → stop
+            profiel_url = src
             break
         elif 'map' in filename and not map_url:
-            map_url = src       # routekaart als fallback
+            map_url = src
     if not profiel_url and map_url:
         profiel_url = map_url
 
-    # Sla op in DB
     conn.execute(
         "UPDATE koersen SET afstand=?, hoogtemeters=?, profiel_url=? WHERE id=?",
         (afstand, hoogtemeters, profiel_url, kid)
@@ -2710,7 +2654,6 @@ def fetch_profiel(kid):
 # ── API: Favorieten ophalen van PCS ───────────────────────────────────────────
 
 def _get_pcs_favorieten(slug, year):
-    """Scrape top-competitors from PCS /live page. Returns list of name strings."""
     scraper = cloudscraper.create_scraper()
     pcs_headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36"}
     url = f"https://www.procyclingstats.com/race/{slug}/{year}/live"
@@ -2736,9 +2679,8 @@ def _get_pcs_favorieten(slug, year):
 
 @app.route("/api/koersen/<int:kid>/favorieten")
 def get_koers_favorieten(kid):
-    """Geeft opgeslagen favorieten terug, matcht tegen huidige ploeg & opstelling."""
     conn = get_db()
-    koers = conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone()
+    koers = dict(conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone() or {})
     if not koers:
         conn.close()
         return jsonify([])
@@ -2746,7 +2688,6 @@ def get_koers_favorieten(kid):
     try:
         raw = koers['favorieten_json']
     except (IndexError, KeyError):
-        # Kolom bestaat nog niet (migration nog niet gerund)
         conn.close()
         return jsonify([])
     if not raw:
@@ -2759,7 +2700,6 @@ def get_koers_favorieten(kid):
         conn.close()
         return jsonify([])
 
-    # Laad huidige ploeg en opstelling voor name-matching
     uid = current_user_id()
     ploeg = conn.execute(
         "SELECT r.naam FROM mijn_ploeg m JOIN renners r ON r.id = m.renner_id WHERE m.user_id=?", (uid,)
@@ -2784,14 +2724,13 @@ def get_koers_favorieten(kid):
 
 @app.route("/api/koersen/<int:kid>/fetch-favorieten", methods=["POST"])
 def fetch_koers_favorieten(kid):
-    """Haalt favorieten op van PCS en slaat ze op."""
     conn = get_db()
-    koers = conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone()
+    koers = dict(conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone() or {})
     if not koers:
         conn.close()
         return jsonify({"error": "Koers niet gevonden"}), 404
 
-    slug = PCS_SLUGS.get(koers['naam'])
+    slug = koers['pcs_slug']
     if not slug:
         conn.close()
         return jsonify({"error": f"Geen PCS-koppeling voor '{koers['naam']}'"}), 404
@@ -2803,14 +2742,12 @@ def fetch_koers_favorieten(kid):
         conn.close()
         return jsonify({"error": "Geen favorieten gevonden op PCS (koers mogelijk nog niet gepubliceerd)."}), 404
 
-    # Sla ruwe namen op in DB
     conn.execute(
         "UPDATE koersen SET favorieten_json=? WHERE id=?",
         (json.dumps(namen, ensure_ascii=False), kid)
     )
     conn.commit()
 
-    # Match tegen huidige ploeg & opstelling voor de response
     uid = current_user_id()
     ploeg = conn.execute(
         "SELECT r.naam FROM mijn_ploeg m JOIN renners r ON r.id = m.renner_id WHERE m.user_id=?", (uid,)
@@ -2893,20 +2830,13 @@ def get_resultaten(kid):
 
 
 def _zoek_of_maak_winnaar(conn, winnaar_naam, winnaar_ploeg=''):
-    """Zoek de winnaar in renners op naam. Maak aan als niet gevonden (actief=0)."""
     alle_renners = conn.execute("SELECT id, naam FROM renners").fetchall()
-
-    # Zoek op naam via _name_match
     for r in alle_renners:
         if _name_match(winnaar_naam, {_norm(r['naam'])}):
             return r['id']
 
-    # Niet gevonden — maak nieuwe renner aan (actief=0 = niet in budget-pool)
     app.logger.info(f"Winnaar '{winnaar_naam}' niet gevonden, wordt aangemaakt.")
-
-    # Foto ophalen
     foto = _fetch_foto_wikipedia(winnaar_naam) or _fetch_foto_pcs(winnaar_naam)
-
     cur = conn.execute(
         "INSERT INTO renners (naam, ploeg, rol, prijs, actief, foto) VALUES (?,?,?,?,0,?)",
         (winnaar_naam, winnaar_ploeg or '—', 'allrounder', 0.0, foto)
@@ -2919,13 +2849,6 @@ def _zoek_of_maak_winnaar(conn, winnaar_naam, winnaar_ploeg=''):
 
 @app.route("/api/koersen/<int:kid>/resultaten/bulk", methods=["POST"])
 def add_resultaten_bulk(kid):
-    """
-    Verwacht een dict met:
-      renners: [{ renner_id, positie, is_ploegmaat_winnaar }]
-      winnaar_naam: str (optioneel, echte winnaar van de koers)
-      winnaar_ploeg: str (optioneel)
-    Of (legacy) een lijst direct.
-    """
     payload = request.json
     if isinstance(payload, list):
         data = payload
@@ -2939,14 +2862,13 @@ def add_resultaten_bulk(kid):
     uid = current_user_id()
     conn = get_db()
 
-    koers = conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone()
+    koers = dict(conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone() or {})
     if not koers:
         conn.close()
         return jsonify({"error": "Koers niet gevonden"}), 404
 
     soort = koers["soort"]
 
-    # Haal de opstelling op voor deze koers (user-specifiek)
     opstelling_rows = conn.execute(
         "SELECT renner_id, is_kopman FROM opstelling WHERE koers_id=? AND user_id=?", (kid, uid)
     ).fetchall()
@@ -2958,7 +2880,6 @@ def add_resultaten_bulk(kid):
             rid = r["renner_id"]
             pos = r.get("positie")
 
-            # Punten enkel voor renners in opstelling (of als geen opstelling ingesteld)
             if rid in opstelling_ids or not opstelling_ids:
                 punten_basis = punten_voor_positie(soort, pos) if pos else 0
                 bonus_kopman = kopman_bonus(pos) if rid == kopman_id and pos else 0
@@ -2990,7 +2911,6 @@ def add_resultaten_bulk(kid):
         conn.close()
         return jsonify({"error": str(e)}), 400
 
-    # ── Echte winnaar opslaan ──────────────────────────────────────────────────
     if winnaar_naam:
         try:
             winnaar_id = _zoek_of_maak_winnaar(conn, winnaar_naam, winnaar_ploeg)
@@ -3011,14 +2931,12 @@ def get_sporza_session():
     uid = current_user_id()
     conn = get_db()
     sid = current_seizoen_id(conn)
-    # Cleanup: verwijder ongeldige VT/RT waarden (bijv. opgeslagen placeholder '••••••••')
     for sleutel_base in ('sporza_cookie_vt', 'sporza_cookie_rt', 'sporza_cookie'):
         sleutel = f"{sleutel_base}_{uid}"
         row = conn.execute(
             "SELECT waarde FROM instellingen WHERE sleutel=?", (sleutel,)
         ).fetchone()
         if not row:
-            # Fallback naar ongesuffixte key (backward compat)
             row = conn.execute(
                 "SELECT waarde FROM instellingen WHERE sleutel=?", (sleutel_base,)
             ).fetchone()
@@ -3027,7 +2945,6 @@ def get_sporza_session():
                 "UPDATE instellingen SET waarde='' WHERE sleutel=?", (sleutel,)
             )
             conn.commit()
-    # Auto-refresh als AT verlopen is én we een RT hebben
     at = _get_sporza_at(conn)
     vt = _get_user_inst_val(conn, 'sporza_cookie_vt', sid=sid)
     rt = _get_user_inst_val(conn, 'sporza_cookie_rt', sid=sid)
@@ -3042,12 +2959,9 @@ def get_sporza_session():
 
 
 def _sanitize_cookie(val):
-    """Verwijder niet-ASCII tekens en placeholder-bullets uit cookie-waarden."""
     if not val:
         return ''
-    # Verwijder niet-ASCII (bijv. '•' placeholder die per ongeluk opgeslagen werd)
     ascii_val = val.encode('ascii', errors='ignore').decode('ascii').strip()
-    # Placeholder herkend als reeks bullets
     if all(c == '\x95' or c == chr(8226) for c in val.strip()):
         return ''
     return ascii_val
@@ -3070,7 +2984,6 @@ def set_sporza_session():
     if cookie_rt:
         _set_user_inst_val(conn, 'sporza_cookie_rt', cookie_rt, sid=sid)
     conn.commit()
-    # Als alleen RT opgegeven: probeer meteen een verse AT te halen
     if cookie_rt and not cookie:
         new_at = _refresh_sporza_at(conn)
         conn.close()
@@ -3083,8 +2996,7 @@ def set_sporza_session():
 
 # ── API: Sporza WM mini-competities ───────────────────────────────────────────
 
-def _jwt_verlopen(token):  # ook gebruikt in get_sporza_session
-    """Geeft True terug als het JWT-token verlopen is."""
+def _jwt_verlopen(token):
     import base64, time
     try:
         payload_b64 = token.split('.')[1]
@@ -3190,10 +3102,8 @@ def _refresh_sporza_at(conn, sid=None):
 
 
 def _get_sporza_at(conn, sid=None):
-    """Haal de Sporza AT op en vernieuw automatisch via RT als het token verlopen is."""
     if sid is None: sid = current_seizoen_id(conn)
     at = (_get_user_inst_val(conn, 'sporza_cookie', sid=sid) or '').strip()
-    # Refresh als AT leeg is OF verlopen — zodat ook RT-only setup werkt
     if (not at) or _jwt_verlopen(at):
         new_at = _refresh_sporza_at(conn, sid=sid)
         if new_at:
@@ -3202,7 +3112,6 @@ def _get_sporza_at(conn, sid=None):
 
 
 def _rsc_decode(node, arr, depth=0):
-    """Decodeert een React Server Components (RSC) flight array naar gewone Python objecten."""
     if depth > 50:
         return node
     if isinstance(node, (str, int, float, bool)) or node is None:
@@ -3224,7 +3133,6 @@ def _rsc_decode(node, arr, depth=0):
 
 
 def _rsc_find(obj, target, depth=0):
-    """Zoekt recursief naar een sleutel in een gedecodeerd RSC object."""
     if depth > 20 or obj is None:
         return None
     if isinstance(obj, dict):
@@ -3243,7 +3151,6 @@ def _rsc_find(obj, target, depth=0):
 
 
 def _find_lineup_with_riders(obj, depth=0):
-    """Zoekt de lineup-dict met 'riders' EN 'score' (niet de gameRules-lineup)."""
     if depth > 15 or obj is None:
         return None
     if isinstance(obj, dict):
@@ -3263,7 +3170,6 @@ def _find_lineup_with_riders(obj, depth=0):
 
 @app.route("/api/sporza-mini", methods=["GET"])
 def sporza_mini_competities():
-    """Haal de mini-competities op van Sporza WM via de Remix .data endpoints."""
     conn = get_db()
     sid = current_seizoen_id(conn)
     edition = _get_sporza_edition(conn, sid)
@@ -3282,7 +3188,6 @@ def sporza_mini_competities():
         "Accept": "*/*",
     }
 
-    # 1. Haal competitions.data op (Remix RSC endpoint — werkt wél met cookie)
     try:
         resp = _requests.get(
             f"{SPORZA_BASE}/{edition}/competitions.data",
@@ -3304,13 +3209,11 @@ def sporza_mini_competities():
 
     mijn_comps = _rsc_find(decoded, "miniCompetitions") or []
 
-    # 2. Voor elke mini-competitie het volledige klassement ophalen via detail .data
     resultaat = []
     for comp in mijn_comps:
         slug = comp.get("slug", "")
         top  = comp.get("topRankings") or []
 
-        # Bepaal welke userId de ingelogde gebruiker heeft (isMyTeam=True in topRankings)
         eigen_user_id = next(
             (m.get("userId") for m in top if m.get("isMyTeam")), None
         )
@@ -3326,7 +3229,6 @@ def sporza_mini_competities():
                     det_arr = det.json()
                     det_decoded = _rsc_decode(det_arr[0], det_arr)
                     members = _rsc_find(det_decoded, "members") or []
-                    # members heeft geen isMyTeam vlag → afleiden van userId
                     for m in members:
                         is_eigen = (m.get("userId") == eigen_user_id) if eigen_user_id else False
                         klassement.append({
@@ -3340,7 +3242,6 @@ def sporza_mini_competities():
             except Exception:
                 pass
 
-        # Fallback: gebruik topRankings als klassement leeg is
         if not klassement:
             klassement = [
                 {
@@ -3366,7 +3267,6 @@ def sporza_mini_competities():
 
 @app.route("/api/sporza-mini/team/<slug>/<team_code>", methods=["GET"])
 def sporza_mini_team(slug, team_code):
-    """Haal de ploegsamenstelling op van een deelnemer in een mini-competitie."""
     conn = get_db()
     sid = current_seizoen_id(conn)
     edition = _get_sporza_edition(conn, sid)
@@ -3411,7 +3311,6 @@ def sporza_mini_team(slug, team_code):
     riders = lineup.get("riders") or []
     total_score = (lineup.get("score") or {}).get("overallScore", 0)
 
-    # riders hebben geen totalBasePoints → haal punten op uit de algemene cyclists-lijst
     try:
         cyl_resp = _requests.get(
             f"{SPORZA_BASE}/api/{edition}/cyclists",
@@ -3424,7 +3323,6 @@ def sporza_mini_team(slug, team_code):
     except Exception:
         cyclist_punten = {}
 
-    # Eigen ploeg-IDs ophalen uit gameStatus.roster (zit in dezelfde RSC-response)
     eigen_roster = _rsc_find(decoded, "roster") or []
     eigen_ids = {r.get("id") for r in eigen_roster if isinstance(r, dict) and r.get("id")}
 
@@ -3436,10 +3334,9 @@ def sporza_mini_team(slug, team_code):
             "ploeg":        (r.get("team") or {}).get("shortName", ""),
             "prijs":        r.get("price", 0),
             "punten":       cyclist_punten.get(rid, 0),
-            "lineupType":   r.get("lineupType", ""),   # CAPTAIN / SUBSTITUTE / ""
+            "lineupType":   r.get("lineupType", ""),
             "inEigenPloeg": rid in eigen_ids,
         })
-    # Sorteer: kopman eerst, dan op punten
     renners.sort(key=lambda x: (0 if x["lineupType"] == "CAPTAIN" else 1 if x["lineupType"] == "SUBSTITUTE" else 2, -x["punten"]))
 
     return jsonify({"renners": renners, "totalScore": total_score})
@@ -3447,13 +3344,11 @@ def sporza_mini_team(slug, team_code):
 
 @app.route("/api/sporza-mini/transfers", methods=["GET"])
 def sporza_mini_transfer_tips():
-    """Transfer suggesties op basis van renners in mini-competitie ploegen."""
     uid = current_user_id()
     conn = get_db()
     sid = current_seizoen_id(conn)
     edition = _get_sporza_edition(conn, sid)
 
-    # Eigen ploeg uit DB
     eigen_ploeg = conn.execute("""
         SELECT r.id, r.naam, r.prijs, r.totaal_punten,
                COALESCE(m.aangeschaft_prijs, r.prijs) as aangeschaft_prijs
@@ -3463,13 +3358,11 @@ def sporza_mini_transfer_tips():
     eigen_lijst = [dict(r) for r in eigen_ploeg]
     eigen_namen_norm = {_norm(r["naam"]) for r in eigen_lijst}
 
-    # Budget resterend berekenen
     inst = _get_inst(conn, uid, sid=sid)
     budget = float(inst.get("budget", 100.0))
     uitgegeven = sum(r["aangeschaft_prijs"] for r in eigen_ploeg)
     budget_rest = round(budget - uitgegeven, 2)
 
-    # Alle lokale actieve renners voor naam-matching en quickAdd
     alle_renners_list = [dict(r) for r in conn.execute(
         "SELECT id, naam, prijs FROM renners WHERE actief=1 AND seizoen_id=?", (sid,)
     ).fetchall()]
@@ -3488,7 +3381,6 @@ def sporza_mini_transfer_tips():
         "Accept": "*/*",
     }
 
-    # Sporza renner-punten ophalen (gedeeld met sporza_mini_team)
     try:
         cyl_resp = _requests.get(
             f"{SPORZA_BASE}/api/{edition}/cyclists", headers=headers, timeout=15
@@ -3500,7 +3392,6 @@ def sporza_mini_transfer_tips():
     except Exception:
         cyclist_punten = {}
 
-    # Mini-competitie rankings ophalen
     try:
         resp = _requests.get(
             f"{SPORZA_BASE}/{edition}/competitions.data", headers=headers, timeout=20
@@ -3515,12 +3406,11 @@ def sporza_mini_transfer_tips():
 
     alle_suggesties = []
 
-    for comp in mijn_comps[:1]:  # Eerste mini-competitie
+    for comp in mijn_comps[:1]:
         slug = comp.get("slug", "")
         top = comp.get("topRankings") or []
         eigen_user_id = next((m.get("userId") for m in top if m.get("isMyTeam")), None)
 
-        # Volledig ledenlijst ophalen
         try:
             det = _requests.get(
                 f"{SPORZA_BASE}/{edition}/competitions/{slug}.data",
@@ -3537,8 +3427,7 @@ def sporza_mini_transfer_tips():
         eigen_lid = next((m for m in members if m.get("userId") == eigen_user_id), None)
         eigen_punten = eigen_lid.get("points", 0) if eigen_lid else 0
 
-        # Kandidaten: renners uit top-5 concurrenten die niet in eigen ploeg zitten
-        renner_kandidaten = {}  # naam_norm -> kandidaat dict
+        renner_kandidaten = {}
 
         for member in sorted(members, key=lambda x: x.get("rank", 999)):
             if member.get("userId") == eigen_user_id:
@@ -3571,12 +3460,10 @@ def sporza_mini_transfer_tips():
                 rid = r.get("id")
                 if not naam:
                     continue
-                # Skip als al in eigen ploeg (naam-vergelijking)
                 if _name_match(naam, eigen_namen_norm):
                     continue
                 punten = cyclist_punten.get(rid, 0) if rid else 0
                 naam_norm = _norm(naam)
-                # Bewaar hoogste-punten-versie als meerdere concurrenten zelfde renner hebben
                 if naam_norm not in renner_kandidaten or punten > renner_kandidaten[naam_norm]["punten"]:
                     renner_kandidaten[naam_norm] = {
                         "naam": naam,
@@ -3588,7 +3475,6 @@ def sporza_mini_transfer_tips():
                         "achterstand": achterstand,
                     }
 
-        # Match elke kandidaat naar lokale DB-renner (voor quickAdd)
         for kandidaat in renner_kandidaten.values():
             lokale_match = None
             for r in alle_renners_list:
@@ -3597,10 +3483,8 @@ def sporza_mini_transfer_tips():
                     break
             kandidaat["lokale_id"] = lokale_match["id"] if lokale_match else None
 
-        # Eigen ploeg gesorteerd van laagst naar hoogst op punten (slechtste swap-kandidaten eerst)
         eigen_gesorteerd = sorted(eigen_lijst, key=lambda x: x["totaal_punten"])
 
-        # Voor elke kandidaat (gesorteerd op punten desc), zoek de beste budgetconforme swap
         for kandidaat in sorted(renner_kandidaten.values(), key=lambda x: -x["punten"]):
             prijs_in = kandidaat["prijs"]
             for eigen_r in eigen_gesorteerd:
@@ -3625,7 +3509,7 @@ def sporza_mini_transfer_tips():
                         "achterstand": kandidaat["achterstand"],
                         "budget_delta": round(prijs_uit - prijs_in, 2),
                     })
-                    break  # Eén swap per kandidaat
+                    break
 
     alle_suggesties.sort(key=lambda x: -x["punt_winst"])
     return jsonify(alle_suggesties[:10])
@@ -3658,7 +3542,7 @@ def _doorzetten_sporza_impl(kid):
     conn = get_db()
     sid = current_seizoen_id(conn)
     edition = _get_sporza_edition(conn, sid)
-    koers = conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone()
+    koers = dict(conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone() or {})
     if not koers:
         conn.close()
         return jsonify({"error": "Koers niet gevonden"}), 404
@@ -3669,7 +3553,6 @@ def _doorzetten_sporza_impl(kid):
         return jsonify({"error": f"Geen Sporza WM koppeling voor '{koers['naam']}'"}), 404
 
     uid = current_user_id()
-    # Haal de opstelling op (min. 12 renners vereist)
     opstelling_rows = conn.execute(
         "SELECT renner_id, is_kopman FROM opstelling WHERE koers_id=? AND user_id=?", (kid, uid)
     ).fetchall()
@@ -3680,15 +3563,12 @@ def _doorzetten_sporza_impl(kid):
         conn.close()
         return jsonify({"error": f"Opstelling bevat slechts {len(opstelling_ids)} renners. Minstens 12 nodig."}), 400
 
-    # Haal lokale rennersnamen op
     mijn_ploeg = conn.execute("""
         SELECT r.id, r.naam FROM mijn_ploeg m JOIN renners r ON r.id = m.renner_id
         WHERE m.user_id = ? AND m.seizoen_id = ?
     """, (uid, sid)).fetchall()
 
     sporza_cookie = _get_sporza_at(conn, sid=sid)
-
-    # Haal ook de VT cookie op (optioneel maar verhoogt kans van slagen)
     sporza_cookie_vt_val = (_get_user_inst_val(conn, 'sporza_cookie_vt', sid=sid) or '').strip()
     conn.close()
 
@@ -3710,8 +3590,6 @@ def _doorzetten_sporza_impl(kid):
             h["Content-Type"] = content_type
         return h
 
-    # Gebruik session cookie jar i.p.v. Cookie header, zodat Sporza session-cookies
-    # automatisch worden bijgehouden en meegestuurd.
     scraper = cloudscraper.create_scraper()
     scraper.cookies.set('sporza-site_profile_at', sporza_cookie,
                         domain='wielermanager.sporza.be', path='/')
@@ -3719,7 +3597,6 @@ def _doorzetten_sporza_impl(kid):
         scraper.cookies.set('sporza-site_profile_vt', sporza_cookie_vt,
                             domain='wielermanager.sporza.be', path='/')
 
-    # Bezoek team-pagina om sessie-cookies te ontvangen (CSRF, wm-session e.d.)
     try:
         scraper.get(
             f"{SPORZA_BASE}/{edition}/team",
@@ -3727,9 +3604,9 @@ def _doorzetten_sporza_impl(kid):
             timeout=15,
         )
     except Exception:
-        pass  # Geen sessie-cookies → POST wordt alsnog geprobeerd
+        pass
 
-    sporza_riders = {}  # {id: fullName}
+    sporza_riders = {}
     bron_label_riders = "onbekend"
 
     team_data_url = f"{SPORZA_BASE}/{edition}/team.data"
@@ -3741,12 +3618,10 @@ def _doorzetten_sporza_impl(kid):
         if team_resp.status_code == 200:
             sporza_riders = _parse_sporza_riders(team_resp.text)
             bron_label_riders = "team.data"
-            # Zoek het WM match-nummer (klein volgnummer) voor deze koers
             wm_match_id = _find_wm_match_id(team_resp.text, match_id)
     except Exception:
-        pass  # val terug op cyclists API
+        pass
 
-    # Fallback: gebruik de volledige cyclists API (alle ~200 renners)
     if not sporza_riders:
         cyclists_url = f"{SPORZA_BASE}/api/{edition}/cyclists"
         try:
@@ -3763,11 +3638,9 @@ def _doorzetten_sporza_impl(kid):
     if not sporza_riders:
         return jsonify({"error": "Kon geen renners vinden in Sporza WM. Controleer je cookie."}), 503
 
-    # Invert: naam (genormaliseerd) → id
     naam_to_id = {_norm(naam): sporza_id for sporza_id, naam in sporza_riders.items()}
 
     def _sporza_match(db_naam, sporza_naam_norm):
-        """Match inclusief initialen: 'A.W. Philipsen' matcht 'albert philipsen'."""
         if _name_match(db_naam, {sporza_naam_norm}):
             return True
         db_norm = _norm(db_naam)
@@ -3781,22 +3654,19 @@ def _doorzetten_sporza_impl(kid):
         sp_surname = sp_tokens[-1]
         if db_surname != sp_surname:
             return False
-        # Achternaam matcht — check initialen van voornaam
-        db_first = db_tokens[0]  # bijv. "a.w." of "j."
-        sp_first = sp_tokens[0]  # bijv. "albert" of "jasper"
+        db_first = db_tokens[0]
+        sp_first = sp_tokens[0]
         initials = [c for c in db_first if c.isalpha()]
         if initials and sp_first.startswith(initials[0]):
             return True
         return False
 
-    # Match lokale renners op Sporza WM IDs
     lineup = []
     niet_gevonden = []
     for r in mijn_ploeg:
         norm_naam = _norm(r["naam"])
         sporza_id = naam_to_id.get(norm_naam)
         if not sporza_id:
-            # Achternaam-matching + initialen-matching
             for snaam, snorm in [(naam, _norm(naam)) for naam in sporza_riders.values()]:
                 if _sporza_match(r["naam"], snorm):
                     sporza_id = next(k for k, v in sporza_riders.items() if _norm(v) == snorm)
@@ -3816,7 +3686,6 @@ def _doorzetten_sporza_impl(kid):
             "error": f"Kon volgende renners niet koppelen aan Sporza WM: {', '.join(niet_gevonden)}"
         }), 400
 
-    # Controleer tellingen (Sporza WM vereist: 1 CAPTAIN, 11 NORMAL, 8 SUBSTITUTE)
     captains = [x for x in lineup if x["lineupType"] == "CAPTAIN"]
     normals   = [x for x in lineup if x["lineupType"] == "NORMAL"]
     subs      = [x for x in lineup if x["lineupType"] == "SUBSTITUTE"]
@@ -3826,7 +3695,6 @@ def _doorzetten_sporza_impl(kid):
             "error": f"Ongeldige lineup: {len(captains)} captain(s), {len(normals)} normal, {len(subs)} substitute. Verwacht: 1/11/8."
         }), 400
 
-    # POST naar Sporza WM — gebruik WM match_id (klein volgnummer) + .data suffix
     actual_match_id = wm_match_id if wm_match_id else match_id
     post_url = f"{SPORZA_BASE}/api/{edition}/gameteams/lineups/{actual_match_id}.data"
     app.logger.info(f"Sporza POST: gracenote={match_id}, wm_match_id={wm_match_id}, url={post_url}")
@@ -3846,21 +3714,16 @@ def _doorzetten_sporza_impl(kid):
     raw_body = post_resp.text[:500]
     app.logger.info(f"Sporza POST response: status={post_resp.status_code}, body={raw_body[:200]}")
 
-    # .data endpoints retourneren RSC wire-formaat (geen JSON) bij succes
-    # Check eerst status code: 200/204 = success
     try:
         result = post_resp.json()
     except Exception:
-        result = None  # RSC-formaat of HTML — geen JSON
+        result = None
 
-    # Succes-detectie: status 200/204, of JSON met "success": true
     is_success = False
     if post_resp.status_code in (200, 204):
         if result and isinstance(result, dict):
-            # JSON response — check expliciete success flag
-            is_success = result.get("success", True)  # 200 + JSON = waarschijnlijk OK
+            is_success = result.get("success", True)
         else:
-            # RSC-formaat bij 200 = success (Sporza retourneert geen error bij 200)
             is_success = True
     elif result and isinstance(result, dict) and result.get("success"):
         is_success = True
@@ -3874,7 +3737,6 @@ def _doorzetten_sporza_impl(kid):
             "wm_match_id": actual_match_id,
         })
 
-    # Fout-afhandeling
     sporza_error = ""
     if result and isinstance(result, dict):
         sporza_error = result.get('error') or result.get('message') or result.get('detail') or str(result)[:200]
@@ -3882,7 +3744,6 @@ def _doorzetten_sporza_impl(kid):
         sporza_error = raw_body[:200]
     verlopen = (post_resp.status_code == 500 and 'fout gelopen' in sporza_error)
 
-    # Genereer browser console-commando als fallback
     import json as _json
     lineup_json = _json.dumps({"action": "SAVE_LINEUP", "lineup": lineup}, ensure_ascii=False)
     console_cmd = (
@@ -3913,21 +3774,19 @@ def _doorzetten_sporza_impl(kid):
 
 @app.route("/api/koersen/<int:kid>/live-debug", methods=["GET"])
 def get_koers_live_debug(kid):
-    """Debug: test meerdere live-data bronnen."""
     conn = get_db()
     sid = current_seizoen_id(conn)
     edition = _get_sporza_edition(conn, sid)
-    koers = conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone()
+    koers = dict(conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone() or {})
     cookie_at = _get_sporza_at(conn, sid=sid)
     conn.close()
-    slug = PCS_SLUGS.get(koers['naam'])
+    slug = koers['pcs_slug']
     year = koers['datum'][:4]
     match_id = koers.get('sporza_match_id')
     scraper = cloudscraper.create_scraper()
     ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36"
     results = {}
 
-    # ── 1. Sporza WM zonder cookie (publieke score endpoints) ─────────────────
     sporza_urls = [
         f"{SPORZA_BASE}/api/{edition}/matches/{match_id}/scores",
         f"{SPORZA_BASE}/api/{edition}/matches/{match_id}",
@@ -3941,7 +3800,6 @@ def get_koers_live_debug(kid):
         except Exception as e:
             results[url] = {"error": str(e)}
 
-    # ── 2. Sporza WM RSC zonder cookie ────────────────────────────────────────
     rsc_urls = [
         f"{SPORZA_BASE}/{edition}/match/{match_id}.data",
         f"{SPORZA_BASE}/{edition}/races/{match_id}/results.data",
@@ -3954,7 +3812,6 @@ def get_koers_live_debug(kid):
         except Exception as e:
             results[url] = {"error": str(e)}
 
-    # ── 3. FirstCycling race result (numeriek race ID) ─────────────────────────
     fc_race_ids = {'Strade Bianche': 953, 'Omloop Het Nieuwsblad': 834, 'Milaan-Sanremo': 19,
                    'Ronde van Vlaanderen': 9, 'Parijs-Roubaix': 11, 'Amstel Gold Race': 4,
                    'Waalse Pijl': 13, 'Luik-Bastenaken-Luik': 14}
@@ -3983,47 +3840,45 @@ def get_koers_live_debug(kid):
         except Exception as e:
             results[fc_url] = {"error": str(e)}
 
-    # ── 3. PCS /result: toon HTML van eerste tabel rijen ─────────────────────
-    result_url = f"https://www.procyclingstats.com/race/{slug}/{year}/result"
-    try:
-        r = scraper.get(result_url, headers={"User-Agent": ua}, timeout=12)
-        if r.status_code == 200:
-            soup = BeautifulSoup(r.text, 'html.parser')
-            tables = soup.find_all('table')
-            tbl_debug = []
-            for tbl in tables:
-                hdrs = [th.get_text(strip=True) for th in tbl.find_all('th')]
-                rows = tbl.find_all('tr')
-                row_debug = []
-                for row in rows[1:4]:
-                    cells = row.find_all('td')
-                    links = [(a.get('href',''), a.get_text(strip=True)) for a in row.find_all('a')]
-                    cell_texts = [c.get_text(strip=True) for c in cells]
-                    row_html = str(row)[:500]
-                    row_debug.append({"texts": cell_texts, "links": links, "html": row_html})
-                tbl_debug.append({"headers": hdrs, "rows": row_debug})
-            results[result_url] = {"status": 200, "length": len(r.text), "tables": tbl_debug}
-        else:
-            results[result_url] = {"status": r.status_code}
-    except Exception as e:
-        results[result_url] = {"error": str(e)}
+    if slug:
+        result_url = f"https://www.procyclingstats.com/race/{slug}/{year}/result"
+        try:
+            r = scraper.get(result_url, headers={"User-Agent": ua}, timeout=12)
+            if r.status_code == 200:
+                soup = BeautifulSoup(r.text, 'html.parser')
+                tables = soup.find_all('table')
+                tbl_debug = []
+                for tbl in tables:
+                    hdrs = [th.get_text(strip=True) for th in tbl.find_all('th')]
+                    rows = tbl.find_all('tr')
+                    row_debug = []
+                    for row in rows[1:4]:
+                        cells = row.find_all('td')
+                        links = [(a.get('href',''), a.get_text(strip=True)) for a in row.find_all('a')]
+                        cell_texts = [c.get_text(strip=True) for c in cells]
+                        row_html = str(row)[:500]
+                        row_debug.append({"texts": cell_texts, "links": links, "html": row_html})
+                    tbl_debug.append({"headers": hdrs, "rows": row_debug})
+                results[result_url] = {"status": 200, "length": len(r.text), "tables": tbl_debug}
+            else:
+                results[result_url] = {"status": r.status_code}
+        except Exception as e:
+            results[result_url] = {"error": str(e)}
 
     return jsonify(results)
 
 
 @app.route("/api/koersen/<int:kid>/live", methods=["GET"])
 def get_koers_live(kid):
-    """Live wedstrijddata: eerst via Sporza WM match-API, dan PCS als fallback."""
     conn = get_db()
     sid = current_seizoen_id(conn)
     edition = _get_sporza_edition(conn, sid)
-    koers = conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone()
+    koers = dict(conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone() or {})
     if not koers:
         conn.close()
         return jsonify({"error": "Koers niet gevonden"}), 404
 
     uid = current_user_id()
-    # Eigen opstelling voor in-ploeg markers
     opstelling_namen = {
         r["naam"] for r in conn.execute("""
             SELECT r.naam FROM opstelling o
@@ -4039,10 +3894,10 @@ def get_koers_live(kid):
     }
 
     match_id = koers.get('sporza_match_id')
-    pcs_slug = PCS_SLUGS.get(koers['naam'])
+    pcs_slug = koers.get('pcs_slug')
 
     cookie_at = _get_sporza_at(conn, sid=sid)
-    alias_map = _get_alias_map(conn)  # {db_naam → set(aliassen)}
+    alias_map = _get_alias_map(conn)
     conn.close()
 
     headers_sporza = {
@@ -4054,10 +3909,8 @@ def get_koers_live(kid):
     klassement = []
     bron = None
 
-    # ── Bron 1: Sporza WM match-scores endpoint ──────────────────────────────
     if match_id and cookie_at and not _jwt_verlopen(cookie_at):
         try:
-            # Probeer /api/{edition}/matches/{match_id}/scores (renner per positie)
             for url_tmpl in [
                 f"{SPORZA_BASE}/api/{edition}/matches/{match_id}/scores",
                 f"{SPORZA_BASE}/api/{edition}/matches/{match_id}",
@@ -4069,7 +3922,6 @@ def get_koers_live(kid):
                         data = r.json()
                     except Exception:
                         continue
-                    # Probeer verschillende sleutels voor standings
                     scores = (
                         data.get("scores") or data.get("standings") or
                         data.get("results") or data.get("rankings") or
@@ -4096,7 +3948,6 @@ def get_koers_live(kid):
         except Exception:
             pass
 
-    # ── Bron 2: Sporza WM RSC match.data ─────────────────────────────────────
     if not klassement and match_id and cookie_at and not _jwt_verlopen(cookie_at):
         try:
             r = _requests.get(
@@ -4126,11 +3977,10 @@ def get_koers_live(kid):
         except Exception:
             pass
 
-    # ── Bron 3: PCS result + live pagina scrapen ─────────────────────────────
     commentaar = []
     pcs_status = None
-    uitvallers = []   # DNF renners
-    favorieten = []   # Top competitors (pre-race / live context)
+    uitvallers = []
+    favorieten = []
     race_klaar = False
 
     if pcs_slug:
@@ -4138,7 +3988,6 @@ def get_koers_live(kid):
         scraper = cloudscraper.create_scraper()
         pcs_headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36"}
 
-        # ── 3a. PCS /result: uitvallers + einduitslag ──────────────────────
         try:
             result_url = f"https://www.procyclingstats.com/race/{pcs_slug}/{year}/result"
             resp = scraper.get(result_url, headers=pcs_headers, timeout=15)
@@ -4155,16 +4004,12 @@ def get_koers_live(kid):
                         if len(cells) < 4:
                             continue
                         rank_txt = cells[0].get_text(strip=True)
-                        # Rider naam via <a> link (PCS gebruikt relatieve URLs: "rider/...")
                         rider_a = row.find('a', href=lambda h: h and 'rider/' in (h or ''))
                         if not rider_a:
                             continue
-                        # Gebruik stripped_strings voor correcte naam (voorkomt "DhondtRobbe")
                         naam = ' '.join(rider_a.stripped_strings)
-                        # Team naam
                         team_a = row.find('a', href=lambda h: h and 'team/' in (h or ''))
                         ploeg_naam = team_a.get_text(strip=True) if team_a else ""
-                        # Tijd/achterstand (laatste relevante cel)
                         tijd = ""
                         for c in reversed(cells):
                             t = c.get_text(strip=True)
@@ -4198,13 +4043,11 @@ def get_koers_live(kid):
         except Exception:
             pass
 
-        # ── 3b. PCS /live: top-competitors als context ────────────────────
         try:
             live_url = f"https://www.procyclingstats.com/race/{pcs_slug}/{year}/live"
             resp_l = scraper.get(live_url, headers=pcs_headers, timeout=15)
             if resp_l.status_code == 200:
                 soup_l = BeautifulSoup(resp_l.text, 'html.parser')
-                # "list fs14" zonder "keyvalueList" bevat de top-competitors
                 for ul in soup_l.find_all('ul', class_=True):
                     classes = ul.get('class', [])
                     if 'fs14' in classes and 'keyvalueList' not in classes:
@@ -4221,7 +4064,6 @@ def get_koers_live(kid):
         except Exception:
             pass
 
-    # Cookie-status meegeven aan frontend
     cookie_verlopen = bool(cookie_at) and _jwt_verlopen(cookie_at)
     geen_cookie = not bool(cookie_at)
 
@@ -4243,11 +4085,10 @@ def get_koers_live(kid):
 
 @app.route("/api/koersen/<int:kid>/debug-sporza")
 def debug_sporza(kid):
-    """Debug endpoint: toon de raw Sporza lineup-POST response."""
     conn = get_db()
     sid = current_seizoen_id(conn)
     edition = _get_sporza_edition(conn, sid)
-    koers = conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone()
+    koers = dict(conn.execute("SELECT * FROM koersen WHERE id=?", (kid,)).fetchone() or {})
     if not koers:
         conn.close()
         return jsonify({"error": "Koers niet gevonden"}), 404
@@ -4257,7 +4098,6 @@ def debug_sporza(kid):
     if not match_id or not cookie_at:
         return jsonify({"error": "Geen match_id of cookie"}), 400
     scraper = cloudscraper.create_scraper()
-    # Test GET op gameteams endpoint
     get_url = f"{SPORZA_BASE}/api/{edition}/gameteams/lineups/{match_id}"
     try:
         r = scraper.get(get_url, headers={"Cookie": f"sporza-site_profile_at={cookie_at}"}, timeout=15)
@@ -4268,7 +4108,6 @@ def debug_sporza(kid):
 
 @app.route("/api/sporza-lineup-debug/<int:match_id>")
 def sporza_lineup_debug(match_id):
-    """Diagnostisch: test stap voor stap de Sporza session + lineup POST."""
     conn = get_db()
     sid = current_seizoen_id(conn)
     edition = _get_sporza_edition(conn, sid)
@@ -4290,7 +4129,6 @@ def sporza_lineup_debug(match_id):
         "Referer": f"{SPORZA_BASE}/{edition}/team",
     }
 
-    # Session cookie jar — geen Cookie header, session beheert cookies zelf
     scraper = cloudscraper.create_scraper()
     scraper.cookies.set('sporza-site_profile_at', at,
                         domain='wielermanager.sporza.be', path='/')
@@ -4300,7 +4138,6 @@ def sporza_lineup_debug(match_id):
 
     stappen = []
 
-    # Stap 1: GET team-pagina om sessie-cookies te ontvangen
     try:
         r = scraper.get(
             f"{SPORZA_BASE}/{edition}/team",
@@ -4317,7 +4154,6 @@ def sporza_lineup_debug(match_id):
     except Exception as e:
         stappen.append({"stap": "1. GET /team", "error": str(e)})
 
-    # Stap 2: GET /api/gameteams (bestaat dit endpoint?)
     try:
         r = scraper.get(
             f"{SPORZA_BASE}/api/{edition}/gameteams",
@@ -4334,7 +4170,6 @@ def sporza_lineup_debug(match_id):
 
     lineup_url = f"{SPORZA_BASE}/api/{edition}/gameteams/lineups/{match_id}"
 
-    # Stap 3: GET huidige lineup voor dit match_id
     try:
         r = scraper.get(
             lineup_url,
@@ -4351,7 +4186,6 @@ def sporza_lineup_debug(match_id):
 
     test_body = {"action": "SAVE_LINEUP", "lineup": []}
 
-    # Stap 4a: POST naar /api/.../lineups/{match_id} met Accept: */*
     try:
         r = scraper.post(
             lineup_url,
@@ -4367,7 +4201,6 @@ def sporza_lineup_debug(match_id):
     except Exception as e:
         stappen.append({"stap": "4a. POST /api/lineups (Accept */*)", "error": str(e)})
 
-    # Stap 4b: POST naar /api/.../lineups/{match_id} met Accept: text/x-component (React Router RSC)
     try:
         r = scraper.post(
             lineup_url,
@@ -4384,7 +4217,6 @@ def sporza_lineup_debug(match_id):
     except Exception as e:
         stappen.append({"stap": "4b. POST /api/lineups (RSC)", "error": str(e)})
 
-    # Stap 5: POST naar de hoofdpagina (/<edition>) — React Router stuurt form-actions hier naartoe
     edition_url = f"{SPORZA_BASE}/{edition}"
     try:
         r = scraper.post(
@@ -4403,7 +4235,6 @@ def sporza_lineup_debug(match_id):
     except Exception as e:
         stappen.append({"stap": "5. POST hoofdpagina", "error": str(e)})
 
-    # Stap 6: POST naar /<edition>/team (teampagina als action-url)
     team_url = f"{SPORZA_BASE}/{edition}/team"
     try:
         r = scraper.post(
@@ -4422,7 +4253,6 @@ def sporza_lineup_debug(match_id):
     except Exception as e:
         stappen.append({"stap": "6. POST teampagina", "error": str(e)})
 
-    # Stap 7: haal team.data op en zoek alle 3305xxx match-IDs + WM match_id
     import re as _re
     team_data_text = None
     try:
@@ -4433,7 +4263,6 @@ def sporza_lineup_debug(match_id):
         )
         team_data_text = r.text
         gevonden = list(dict.fromkeys(_re.findall(r'3305\d{3}', r.text)))
-        # Probeer _find_wm_match_id voor elke 3305xxx id
         wm_ids = {}
         for gid in gevonden:
             wm_id = _find_wm_match_id(r.text, gid)
@@ -4448,7 +4277,6 @@ def sporza_lineup_debug(match_id):
     except Exception as e:
         stappen.append({"stap": "7. team.data match IDs", "error": str(e)})
 
-    # Stap 8: POST naar .data URL met ontdekte WM match_id
     wm_id_for_test = None
     if team_data_text:
         wm_id_for_test = _find_wm_match_id(team_data_text, str(match_id))
@@ -4473,7 +4301,6 @@ def sporza_lineup_debug(match_id):
 
 @app.route("/api/sporza-refresh-debug")
 def sporza_refresh_debug():
-    """Debug: roep de SSO-refresh aan en toon de ruwe response."""
     import requests as _req
     conn = get_db()
     rt_row = conn.execute(
@@ -4518,7 +4345,6 @@ def sporza_refresh_debug():
 
 @app.route("/api/sporza-verbinding-test")
 def sporza_verbinding_test():
-    """Test de Sporza WM verbinding: JWT-status + live GET naar gameteams endpoint."""
     import base64, time as _time
     conn = get_db()
     at_raw = conn.execute(
@@ -4549,7 +4375,6 @@ def sporza_verbinding_test():
                "begin": rt[:8] + "…" if rt_aanwezig and len(rt) > 8 else rt}
 
     if not at:
-        # Geen AT — probeer auto-refresh via RT
         if rt_aanwezig:
             conn2 = get_db()
             new_at = _refresh_sporza_at(conn2)
@@ -4580,7 +4405,6 @@ def sporza_verbinding_test():
 
     if jwt.get("verlopen"):
         if rt_aanwezig:
-            # Probeer auto-refresh
             conn2 = get_db()
             new_at = _refresh_sporza_at(conn2)
             conn2.close()
@@ -4607,7 +4431,6 @@ def sporza_verbinding_test():
             })
     jwt_info = jwt
 
-    # Live test: GET /api/{edition}/cyclists — ondersteunt GET en vereist geldige cookie
     scraper = cloudscraper.create_scraper()
     _conn_test = get_db()
     _sid_test = current_seizoen_id(_conn_test)
@@ -4656,7 +4479,6 @@ def get_stats():
     conn = get_db()
     sid = current_seizoen_id(conn)
 
-    # Enkel punten voor renners die in de opstelling stonden voor die koers, gefilterd op seizoen
     totaal = conn.execute("""
         SELECT COALESCE(SUM(r.punten), 0) as punten
         FROM resultaten r
@@ -4718,7 +4540,6 @@ def get_stats():
 # ── AI Chat helpers ────────────────────────────────────────────────────────────
 
 def _build_ai_context(conn):
-    """Bouw een context-string op vanuit de database voor de AI-assistent."""
     uid = current_user_id()
     sid = current_seizoen_id(conn)
     seizoen_row = conn.execute("SELECT naam FROM seizoenen WHERE id=?", (sid,)).fetchone()
@@ -4865,7 +4686,6 @@ Voeg dit blok NIET toe bij algemene vragen of analyses zonder specifieke wissel.
 
 {context}"""
 
-    # Bouw OpenAI-compatible berichtenlijst (Groq gebruikt hetzelfde formaat)
     messages = [{"role": "system", "content": system_prompt}]
     for msg in history[-20:]:
         role = msg.get("role")
@@ -4874,8 +4694,6 @@ Voeg dit blok NIET toe bij algemene vragen of analyses zonder specifieke wissel.
             messages.append({"role": role, "content": str(content)})
     messages.append({"role": "user", "content": user_message})
 
-    # Groq API — gratis, OpenAI-compatibel formaat
-    # Modellen: llama-3.3-70b-versatile (primair), llama-3.1-8b-instant (fallback)
     GROQ_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
     groq_url = "https://api.groq.com/openai/v1/chat/completions"
     groq_headers = {
@@ -4902,7 +4720,7 @@ Voeg dit blok NIET toe bij algemene vragen of analyses zonder specifieke wissel.
                 last_error = resp.json().get("error", {}).get("message", "rate limit")
             except Exception:
                 last_error = "rate limit"
-            continue  # Probeer volgend model
+            continue
         break
 
     if resp.status_code == 401:
@@ -4925,7 +4743,6 @@ Voeg dit blok NIET toe bij algemene vragen of analyses zonder specifieke wissel.
         conn.close()
         return jsonify({"error": f"Ongeldig antwoord van Groq: {str(e)}"}), 503
 
-    # Extraheer optioneel TRANSFER_JSON blok uit de respons
     transfer_suggestion = None
     clean_text = raw_text
     transfer_match = re.search(r'TRANSFER_JSON:\s*(\{.*?\})', raw_text, re.DOTALL)
@@ -4978,7 +4795,7 @@ Voeg dit blok NIET toe bij algemene vragen of analyses zonder specifieke wissel.
                 "match_gevonden":   renner_uit is not None and renner_in is not None,
             }
         except Exception:
-            pass  # JSON parsing mislukt → geen transfer_suggestion
+            pass
 
     conn.close()
     return jsonify({"text": clean_text, "transfer_suggestion": transfer_suggestion})
