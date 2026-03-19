@@ -3097,46 +3097,95 @@ def _jwt_verlopen(token):  # ook gebruikt in get_sporza_session
 
 def _refresh_sporza_at(conn, sid=None):
     """Vernieuw de Sporza AT via de opgeslagen RT cookie.
-    Geeft de nieuwe AT-waarde terug, of None als refresh mislukt."""
+    Geeft de nieuwe AT-waarde terug, of None als refresh mislukt.
+
+    Probeert meerdere endpoints en methodes (cloudscraper + plain requests).
+    """
     if sid is None: sid = current_seizoen_id(conn)
     rt = (_get_user_inst_val(conn, 'sporza_cookie_rt', sid=sid) or '').strip()
     if not rt:
         app.logger.warning("_refresh_sporza_at: geen RT opgeslagen")
         return None
-    try:
-        import requests as _req
-        resp = _req.get(
-            'https://sporza.be/sso/refresh',
-            headers={
-                'Cookie': f'sporza-site_profile_rt={rt}',
-                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
-                              'AppleWebKit/537.36 (KHTML, like Gecko) '
-                              'Chrome/131.0.0.0 Safari/537.36',
-                'Origin': 'https://sporza.be',
-                'Referer': 'https://wielermanager.sporza.be/',
-            },
-            timeout=15,
-            allow_redirects=True,
-        )
-        app.logger.info(f"_refresh_sporza_at: HTTP {resp.status_code}, body={resp.text[:200]}")
-        # Nieuwe AT staat in Set-Cookie header of in cookies van de response
+
+    app.logger.info(f"_refresh_sporza_at: RT aanwezig, lengte={len(rt)}, begin={rt[:12]}…")
+
+    def _extract_at(resp):
+        """Haal AT uit cookies of Set-Cookie header van een response."""
         new_at = resp.cookies.get('sporza-site_profile_at') or ''
         if not new_at:
-            # Fallback: parse raw Set-Cookie header
-            for hdr in resp.raw.headers.getlist('Set-Cookie'):
-                if 'sporza-site_profile_at=' in hdr:
-                    val = hdr.split('sporza-site_profile_at=')[1].split(';')[0].strip()
-                    if val and val != 'deleted':
-                        new_at = val
-                        break
-        if new_at and new_at != 'deleted':
-            _set_user_inst_val(conn, 'sporza_cookie', new_at, sid=sid)
-            conn.commit()
-            app.logger.info("_refresh_sporza_at: nieuwe AT opgeslagen ✅")
-            return new_at
-        app.logger.warning(f"_refresh_sporza_at: geen AT in response (HTTP {resp.status_code})")
-    except Exception as e:
-        app.logger.error(f"_refresh_sporza_at: fout: {e}")
+            raw_hdrs = getattr(resp.raw, 'headers', None)
+            if raw_hdrs:
+                set_cookie_vals = raw_hdrs.getlist('Set-Cookie') if hasattr(raw_hdrs, 'getlist') else [
+                    v for k, v in raw_hdrs.items() if k.lower() == 'set-cookie'
+                ]
+                for hdr in set_cookie_vals:
+                    if 'sporza-site_profile_at=' in hdr:
+                        val = hdr.split('sporza-site_profile_at=')[1].split(';')[0].strip()
+                        if val and val != 'deleted':
+                            new_at = val
+                            break
+        return new_at or ''
+
+    common_headers = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+                      'AppleWebKit/537.36 (KHTML, like Gecko) '
+                      'Chrome/131.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'nl-BE,nl;q=0.9,en;q=0.8',
+        'Origin': 'https://sporza.be',
+        'Referer': 'https://sporza.be/',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-origin',
+    }
+
+    # Probeer meerdere varianten
+    pogingen = [
+        # (library, method, url, extra_headers)
+        ('cloudscraper', 'GET',  'https://sporza.be/sso/refresh', {}),
+        ('cloudscraper', 'POST', 'https://sporza.be/sso/refresh', {}),
+        ('requests',     'GET',  'https://sporza.be/sso/refresh', {}),
+        ('requests',     'GET',  'https://sporza.be/sso/refresh',
+            {'Cookie': f'sporza-site_profile_rt={rt}; sporza-site_profile_at='}),
+    ]
+
+    for lib, method, url, extra_hdrs in pogingen:
+        try:
+            headers = {**common_headers, 'Cookie': f'sporza-site_profile_rt={rt}', **extra_hdrs}
+            if lib == 'cloudscraper':
+                scraper = cloudscraper.create_scraper()
+                fn = scraper.get if method == 'GET' else scraper.post
+                resp = fn(url, headers=headers, timeout=15, allow_redirects=True)
+            else:
+                import requests as _req
+                fn = _req.get if method == 'GET' else _req.post
+                resp = fn(url, headers=headers, timeout=15, allow_redirects=True)
+
+            app.logger.info(
+                f"_refresh_sporza_at [{lib} {method}]: HTTP {resp.status_code}, "
+                f"body={resp.text[:150]}, "
+                f"set-cookie keys={[k for k in resp.cookies.keys()]}"
+            )
+
+            new_at = _extract_at(resp)
+            if new_at and new_at != 'deleted':
+                _set_user_inst_val(conn, 'sporza_cookie', new_at, sid=sid)
+                conn.commit()
+                app.logger.info(f"_refresh_sporza_at: nieuwe AT opgeslagen via [{lib} {method}] ✅")
+                return new_at
+
+            if resp.status_code == 401:
+                app.logger.warning(
+                    f"_refresh_sporza_at [{lib} {method}]: 401 — RT ongeldig of verlopen. "
+                    f"Antwoord: {resp.text[:200]}"
+                )
+                # 401 = RT zelf is invalid → verder proberen heeft geen zin
+                break
+
+        except Exception as e:
+            app.logger.error(f"_refresh_sporza_at [{lib} {method}]: fout: {e}")
+
+    app.logger.warning("_refresh_sporza_at: alle pogingen mislukt — RT vernieuwen in Instellingen")
     return None
 
 
@@ -4496,6 +4545,9 @@ def sporza_verbinding_test():
         except Exception as e:
             return {"jwt_parse_fout": str(e)}
 
+    rt_info = {"aanwezig": rt_aanwezig, "lengte": len(rt) if rt_aanwezig else 0,
+               "begin": rt[:8] + "…" if rt_aanwezig and len(rt) > 8 else rt}
+
     if not at:
         # Geen AT — probeer auto-refresh via RT
         if rt_aanwezig:
@@ -4508,7 +4560,13 @@ def sporza_verbinding_test():
                 return jsonify({
                     "ok": False, "stap": "refresh_mislukt",
                     "rt_aanwezig": True,
-                    "bericht": "Geen AT opgeslagen. RT gevonden maar auto-refresh mislukte. Controleer de Railway logs voor details.",
+                    "rt_info": rt_info,
+                    "bericht": (
+                        "RT gevonden maar auto-refresh mislukte (HTTP 401). "
+                        "De RT is waarschijnlijk verlopen of ongeldig. "
+                        f"RT start met: {rt_info['begin']} (lengte {rt_info['lengte']}). "
+                        "Haal een verse RT op uit je browser (cookie 'sporza-site_profile_rt' op sporza.be)."
+                    ),
                 })
         else:
             return jsonify({"ok": False, "stap": "geen_at", "rt_aanwezig": False,
@@ -4532,7 +4590,13 @@ def sporza_verbinding_test():
             else:
                 return jsonify({
                     "ok": False, "stap": "refresh_mislukt", "rt_aanwezig": True,
-                    "bericht": "AT verlopen. RT aanwezig maar auto-refresh mislukte. Controleer Railway logs.",
+                    "rt_info": rt_info,
+                    "bericht": (
+                        "AT verlopen. RT aanwezig maar auto-refresh mislukte (HTTP 401). "
+                        "De RT is waarschijnlijk zelf verlopen. "
+                        f"RT start met: {rt_info['begin']} (lengte {rt_info['lengte']}). "
+                        "Haal een verse RT op uit je browser (cookie 'sporza-site_profile_rt' op sporza.be)."
+                    ),
                     **jwt,
                 })
         else:
