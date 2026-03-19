@@ -2551,8 +2551,15 @@ def get_uitslag_pcs(kid):
         pos = None
         for pcs in pcs_top30:
             if _name_match(r['naam'], {_norm(pcs['naam'])}):
+                app.logger.warning(
+                    f"[UITSLAG MATCH] db='{r['naam']}' -> pcs='{pcs['naam']}' pos={pcs['positie']}"
+                )
                 pos = pcs['positie']
                 break
+        if pos is None:
+            app.logger.warning(
+                f"[UITSLAG GEEN MATCH] db='{r['naam']}' niet gevonden in top30"
+            )
         in_ops = r['id'] in opstelling_ids
         is_kop = r['id'] == kopman_id
 
