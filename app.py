@@ -212,6 +212,14 @@ def _name_match(db_naam, pcs_set, aliases=None):
     db_naam : naam uit lokale DB (bijv. 'Tom Pidcock')
     pcs_set : set van genormaliseerde externe namen (bijv. {'pidcock thomas'})
     aliases : optionele set van genormaliseerde aliassen voor db_naam
+
+    Achternaam-vergelijking werkt op de LAATSTE token na particle-filtering,
+    zodat 'Matteo Milan' niet matcht op 'Milan De Ceuster' (waarbij 'milan'
+    de voornaam is, niet de achternaam).
+
+    PCS startlijsten gebruiken soms 'LASTNAME Firstname' volgorde. In dat geval
+    is de achternaam de EERSTE token — maar alleen als er ook voornaam-overlap is
+    (anders zou 'Milan Menten' fout matchen op 'Matteo Milan').
     """
     if aliases:
         for pcs_norm in pcs_set:
@@ -224,21 +232,52 @@ def _name_match(db_naam, pcs_set, aliases=None):
         return False
     db_surname = db_tokens[-1]
     db_set = set(db_tokens)
+
     for pcs_norm in pcs_set:
-        pcs_tokens = set(pcs_norm.split()) - _PARTICLES
-        if db_surname not in pcs_tokens:
+        pcs_tokens_list = [t for t in pcs_norm.split() if t not in _PARTICLES]
+        if not pcs_tokens_list:
             continue
-        if len(db_tokens) == 1:
-            return True
-        other_db = db_set - {db_surname}
-        if other_db & pcs_tokens:
-            return True
-        pcs_firstnames = pcs_tokens - {db_surname}
-        if other_db and pcs_firstnames:
-            db_initials  = {t[0] for t in other_db}
-            pcs_initials = {t[0] for t in pcs_firstnames}
-            if db_initials & pcs_initials:
+        pcs_tokens_set = set(pcs_tokens_list)
+
+        # ── Geval 1: normale volgorde — achternaam is laatste PCS-token ──────
+        pcs_surname = pcs_tokens_list[-1]
+        if db_surname == pcs_surname:
+            if len(db_tokens) == 1:
                 return True
+            other_db = db_set - {db_surname}
+            if other_db & pcs_tokens_set:
+                return True
+            pcs_firstnames = pcs_tokens_set - {db_surname}
+            if other_db and pcs_firstnames:
+                db_initials  = {t[0] for t in other_db}
+                pcs_initials = {t[0] for t in pcs_firstnames}
+                if db_initials & pcs_initials:
+                    return True
+
+        # ── Geval 2: omgekeerde volgorde (PCS startlijst: LASTNAME Firstname) ─
+        # Alleen van toepassing als de achternaam de EERSTE token is én er
+        # voornaam-overlap is — om false positives te vermijden.
+        # Initiaal-fallback is toegestaan TENZIJ de voornaam-initiaal gelijk is
+        # aan de beginletter van de achternaam (dan te ambigu: 'm' voor 'Milan'
+        # zou matchen op 'Menten').
+        if len(pcs_tokens_list) >= 2:
+            pcs_surname_rev = pcs_tokens_list[0]
+            if db_surname == pcs_surname_rev and db_surname != pcs_tokens_list[-1]:
+                if len(db_tokens) == 1:
+                    return True
+                other_db = db_set - {db_surname}
+                if other_db & pcs_tokens_set:
+                    return True
+                pcs_firstnames = pcs_tokens_set - {db_surname}
+                if other_db and pcs_firstnames:
+                    db_initials  = {t[0] for t in other_db}
+                    pcs_initials = {t[0] for t in pcs_firstnames}
+                    # Alleen initiaal-match toestaan als de initiaal NIET gelijk is
+                    # aan de beginletter van de achternaam (vermijdt Matteo→Milan→Menten)
+                    unambiguous = db_initials & pcs_initials - {db_surname[0]}
+                    if unambiguous:
+                        return True
+
     return False
 
 
