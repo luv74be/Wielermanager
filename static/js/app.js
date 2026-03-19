@@ -585,9 +585,12 @@ function openVernieuwAtModal() {
         7. Plak de gekopieerde waarde hier:
       </div>
       <textarea id="nieuw-at-input" placeholder="eyJhbGciOi… (lange tekst)"
+        oninput="_valideerAtInput(this.value)"
         style="width:100%; height:72px; padding:8px; border-radius:8px; font-size:0.75rem;
                background:rgba(255,255,255,0.07); border:1px solid rgba(255,255,255,0.2);
                color:inherit; resize:none; box-sizing:border-box; font-family:monospace;"></textarea>
+
+      <div id="at-validatie" style="margin-top:6px;font-size:0.82rem;min-height:20px;"></div>
 
       <div style="display:flex; gap:8px; margin-top:10px;">
         <button onclick="_slaAtOpVanModal()" class="btn btn-primary" style="flex:1;font-size:0.95rem">
@@ -602,6 +605,37 @@ function openVernieuwAtModal() {
   document.body.appendChild(modal);
   modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
   setTimeout(() => document.getElementById('nieuw-at-input')?.focus(), 100);
+}
+
+function _valideerAtInput(val) {
+  const div = document.getElementById('at-validatie');
+  if (!div) return;
+  val = (val || '').trim();
+  if (!val) { div.innerHTML = ''; return; }
+
+  // Moet een JWT zijn: 3 delen gescheiden door punt
+  const delen = val.split('.');
+  if (delen.length !== 3) {
+    div.innerHTML = `<span style="color:#e74c3c">❌ Dit ziet er niet uit als een geldig token (verwacht 3 delen gescheiden door punten)</span>`;
+    return;
+  }
+  try {
+    const payload = JSON.parse(atob(delen[1].replace(/-/g,'+').replace(/_/g,'/')));
+    const exp = payload.exp;
+    const nu = Math.floor(Date.now() / 1000);
+    if (!exp) {
+      div.innerHTML = `<span style="color:#e67e22">⚠️ Geen vervaldatum gevonden in token (lengte: ${val.length})</span>`;
+      return;
+    }
+    const minuten = Math.round((exp - nu) / 60);
+    if (exp < nu) {
+      div.innerHTML = `<span style="color:#e74c3c">❌ Dit token is al <strong>${Math.abs(minuten)} minuten geleden verlopen</strong> — haal een verse op!</span>`;
+    } else {
+      div.innerHTML = `<span style="color:#2ecc71">✅ Token geldig — verloopt over <strong>${minuten} minuten</strong> (lengte: ${val.length})</span>`;
+    }
+  } catch(e) {
+    div.innerHTML = `<span style="color:#e74c3c">❌ Kan token niet lezen: ${e.message}</span>`;
+  }
 }
 
 async function _slaAtOpVanModal() {
