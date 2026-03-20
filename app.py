@@ -975,6 +975,11 @@ def add_cors_headers(response):
         data = response.get_data(as_text=True)
         response.set_data(data.encode('utf-8'))
         response.content_type = 'application/json; charset=utf-8'
+    # Security headers
+    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    response.headers['Permissions-Policy'] = 'geolocation=(), microphone=(), camera=()'
     return response
 
 @app.route('/api/sporza-session', methods=['OPTIONS'])
