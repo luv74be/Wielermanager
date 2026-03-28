@@ -561,7 +561,7 @@ def seed_koersen(conn=None, seizoen_id=1):
         ("Nokere Koerse",            "2026-03-18", "niet_wt",   0, 3305415, "nokere-koerse"),
         ("Bredene Koksijde Classic", "2026-03-20", "niet_wt",   0, 3305417, "bredene-koksijde-classic"),
         ("Milaan-Sanremo",           "2026-03-21", "monument",  0, 3305369, "milano-sanremo"),
-        ("Ronde van Brugge",         "2026-03-25", "worldtour", 0, 3305186, "ronde-van-brugge"),
+        ("Ronde van Brugge",         "2026-03-25", "worldtour", 0, 3305186, "classic-brugge-de-panne"),
         ("E3 Saxo Classic",          "2026-03-27", "worldtour", 0, 3305198, "e3-saxo-classic"),
         ("In Flanders Fields",       "2026-03-29", "worldtour", 0, 3305178, "gent-wevelgem"),
         ("Dwars door Vlaanderen",    "2026-04-01", "worldtour", 0, 3305169, "dwars-door-vlaanderen"),
