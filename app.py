@@ -2446,8 +2446,9 @@ def get_uitslag_pcs(kid):
 
     if resp.status_code == 404:
         return jsonify({"error": "Uitslag niet gevonden op ProCyclingStats."}), 404
-    if resp.status_code == 500:
-        return jsonify({"error": "ProCyclingStats heeft nog geen uitslag (wordt later gepubliceerd)."}), 404
+if resp.status_code not in (200, 500):
+    return jsonify({"error": f"ProCyclingStats niet bereikbaar (HTTP {resp.status_code})."}), 503
+
     if resp.status_code == 403:
         return jsonify({"error": "Toegang geweigerd door ProCyclingStats. Probeer later opnieuw."}), 503
     if resp.status_code != 200:
