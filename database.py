@@ -318,7 +318,7 @@ def init_db():
         'Nokere Koerse':            (3305415, 'nokere-koerse'),
         'Bredene Koksijde Classic': (3305417, 'bredene-koksijde-classic'),
         'Milaan-Sanremo':           (3305369, 'milano-sanremo'),
-        'Ronde van Brugge':         (3305186, 'ronde-van-brugge'),
+        'Ronde van Brugge':         (3305186, 'classic-brugge-de-panne'),
         'E3 Saxo Classic':          (3305198, 'e3-saxo-classic'),
         'In Flanders Fields':       (3305178, 'gent-wevelgem'),
         'Dwars door Vlaanderen':    (3305169, 'dwars-door-vlaanderen'),
