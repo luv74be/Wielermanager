@@ -4531,7 +4531,7 @@ def get_stats():
     """, (uid, uid, sid)).fetchall()
 
     top_renners = conn.execute("""
-        SELECT re.id, re.naam, re.ploeg, re.rol,
+        SELECT re.id, re.naam, re.ploeg, re.rol, re.prijs,
                SUM(r.punten) as punten
         FROM resultaten r
         JOIN renners re ON re.id = r.renner_id
