@@ -3424,6 +3424,32 @@ function renderStatistieken() {
           </div>`}
     </div>
 
+        <div class="card mt-20">
+      <div class="card-title">💰 Punten per Miljoen</div>
+      ${topRenners.length === 0
+        ? '<div class="text-muted fs-sm mt-12">Nog geen resultaten</div>'
+        : (() => {
+            const sorted = [...topRenners]
+              .filter(r => r.prijs > 0)
+              .map(r => ({ ...r, ratio: r.punten / r.prijs }))
+              .sort((a, b) => b.ratio - a.ratio);
+            const maxRatio = sorted[0]?.ratio || 1;
+            return `<div class="chart-bars">
+              ${sorted.map((r, i) => `
+                <div class="chart-row" style="cursor:pointer" ondblclick="openRennerDetail(${r.id})">
+                  <div class="chart-label" style="display:flex;align-items:center;gap:5px">
+                    ${jerseyHtml(r.ploeg, {size:16})}${i+1}. ${r.naam}
+                  </div>
+                  <div class="chart-bar-wrap">
+                    <div class="chart-bar-fill" style="width:${Math.round(r.ratio/maxRatio*100)}%">
+                      ${r.ratio.toFixed(1)}
+                    </div>
+                  </div>
+                </div>`).join('')}
+            </div>`;
+          })()}
+    </div>
+
     <div class="card mt-20">
       <div class="card-title">📅 Punten per Wedstrijd</div>
       ${afgelopen.length === 0
