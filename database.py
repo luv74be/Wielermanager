@@ -341,7 +341,7 @@ def init_db():
             )
         # pcs_slug altijd updaten als nog leeg (ook zonder sporza_match_id)
         conn.execute(
-            "UPDATE koersen SET pcs_slug=? WHERE naam=?,
+            "UPDATE koersen SET pcs_slug=? WHERE naam=?",
             (_slug, _naam)
         )
     conn.commit()
