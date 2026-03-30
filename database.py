@@ -345,7 +345,11 @@ def init_db():
             (_slug, _naam)
         )
     conn.commit()
-
+    # Migratie: corrigeer datum In Flanders Fields
+    conn.execute(
+        "UPDATE koersen SET datum='2026-03-29' WHERE naam='In Flanders Fields'"
+    )
+    conn.commit()
     # ── Multi-seizoen: mijn_ploeg recreëren met UNIQUE(renner_id, user_id, seizoen_id) ──
     _ploeg_cols2 = {row[1] for row in conn.execute("PRAGMA table_info(mijn_ploeg)").fetchall()}
     if 'seizoen_id' not in _ploeg_cols2:
