@@ -10,3 +10,146 @@
   <meta name="theme-color" content="#FF8C00" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Wielermanager" />
+  <link rel="apple-touch-icon" href="/static/img/logo-180.png" />
+
+  <link rel="icon" type="image/svg+xml" href="/static/img/logo.svg" />
+  <link rel="stylesheet" href="/static/css/style.css?v={{ sv }}" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <!-- Sidebar -->
+  <nav class="sidebar" id="sidebar">
+    <div class="sidebar-logo">
+      <svg width="28" height="28" viewBox="0 0 22 22" fill="none" xmlns="http://www.w3.org/2000/svg" style="flex-shrink:0;opacity:0.85">
+        <rect x="2" y="5"  width="18" height="2.2" rx="1.1" fill="currentColor"/>
+        <rect x="2" y="10" width="18" height="2.2" rx="1.1" fill="currentColor"/>
+        <rect x="2" y="15" width="18" height="2.2" rx="1.1" fill="currentColor"/>
+      </svg>
+      <span class="logo-text">Menu</span>
+    </div>
+    <div class="sidebar-seizoen" id="sidebar-seizoen" style="display:none">
+      <span class="seizoen-naam" id="seizoen-naam">Laden…</span>
+      <span class="seizoen-chevron">▾</span>
+    </div>
+    <ul class="nav-links">
+      <li><a href="#" data-page="dashboard" class="nav-link active">
+        <span class="nav-icon">🏠</span> Start
+      </a></li>
+      <li><a href="#" data-page="ploeg" class="nav-link">
+        <span class="nav-icon">👥</span> Mijn Ploeg
+      </a></li>
+      <li><a href="#" data-page="renners" class="nav-link">
+        <span class="nav-icon">🏅</span> Renners
+      </a></li>
+      <li><a href="#" data-page="koersen" class="nav-link">
+        <span class="nav-icon">🗓️</span> Wedstrijden
+      </a></li>
+      <li><a href="#" data-page="statistieken" class="nav-link">
+        <span class="nav-icon">📈</span> Statistieken
+      </a></li>
+      <li><a href="#" data-page="suggesties" class="nav-link">
+        <span class="nav-icon">💡</span> Suggesties
+      </a></li>
+      <li><a href="#" data-page="spelregels" class="nav-link">
+        <span class="nav-icon">📋</span> Spelregels
+      </a></li>
+      <li><a href="#" data-page="ai-chat" class="nav-link">
+        <span class="nav-icon">🤖</span> AI Assistent
+      </a></li>
+      <li><a href="#" data-page="mini-competitie" class="nav-link">
+        <span class="nav-icon">🏆</span> Minicompetitie
+      </a></li>
+      <li><a href="#" data-page="instellingen" class="nav-link">
+        <span class="nav-icon">⚙️</span> Instellingen
+      </a></li>
+      <li id="nav-admin" style="display:none"><a href="#" data-page="admin-gebruikers" class="nav-link">
+        <span class="nav-icon">👤</span> Gebruikers
+      </a></li>
+      <li id="nav-seizoenen" style="display:none"><a href="#" data-page="admin-seizoenen" class="nav-link">
+        <span class="nav-icon">🗂️</span> Seizoenen
+      </a></li>
+      <li id="nav-budget-debug" style="display:none"><a href="#" data-page="admin-budget-debug" class="nav-link">
+        <span class="nav-icon">⚖️</span> Budget Fix
+      </a></li>
+    </ul>
+    <div class="sidebar-footer" id="sidebar-user"></div>
+  </nav>
+
+  <!-- Hamburger voor mobile -->
+  <button class="hamburger" id="hamburger" aria-label="Menu">
+    <svg width="22" height="22" viewBox="0 0 22 22" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="2" y="5"  width="18" height="2.2" rx="1.1" fill="currentColor"/>
+      <rect x="2" y="10" width="18" height="2.2" rx="1.1" fill="currentColor"/>
+      <rect x="2" y="15" width="18" height="2.2" rx="1.1" fill="currentColor"/>
+    </svg>
+  </button>
+
+  <!-- Main content -->
+  <main class="main" id="main">
+    <div class="app-topbar" onclick="navigate('dashboard')" title="Naar Dashboard">
+      <img src="/static/img/logo.svg" class="app-topbar-logo" alt="Wielermanager" />
+      <span class="app-topbar-name">Wielermanager</span>
+    </div>
+
+    <div id="app">
+      <div class="loading">Laden...</div>
+    </div>
+  </main>
+
+  <!-- Toast notifications -->
+  <div class="toast-container" id="toasts"></div>
+
+  <!-- Modal -->
+  <div class="modal-overlay" id="modal-overlay" style="display:none">
+    <div class="modal" id="modal">
+      <button class="modal-close" id="modal-close">✕</button>
+      <div id="modal-content"></div>
+    </div>
+  </div>
+
+  <script src="/static/js/teams.js?v={{ sv }}"></script>
+  <script src="/static/js/app.js?v={{ sv }}"></script>
+
+  <!-- Eruda debug console: alleen op localhost -->
+  <script>
+    if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+      var s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/eruda/eruda.min.js';
+      s.onload = function() { eruda.init(); };
+      document.head.appendChild(s);
+    }
+  </script>
+
+  <!-- Sporza AT auto-refresh via browser -->
+  <script>
+    async function sporzaClientRefresh() {
+      try {
+        await fetch('https://sporza.be/sso/refresh', {
+          credentials: 'include',
+          headers: { 'Accept': 'application/json' }
+        });
+        const cookies = document.cookie;
+        const match = cookies.match(/sporza-site_profile_at=([^;]+)/);
+        if (match) {
+          await fetch('/api/sporza-client-refresh', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ at: match[1] })
+          });
+        }
+      } catch(e) {}
+    }
+    sporzaClientRefresh();
+    setInterval(sporzaClientRefresh, 30 * 60 * 1000);
+  </script>
+
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js', { scope: '/' })
+        .catch(() => {});
+    }
+  </script>
+</body>
+</html>
