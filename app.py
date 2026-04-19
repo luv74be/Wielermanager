@@ -2527,7 +2527,7 @@ def get_uitslag_pcs(kid):
         bns_kop = kopman_bonus(pos) if pos and is_kop and in_ops else 0
 
         renner_ploeg_norm = _norm(r['renner_ploeg'])
-                neemt_deel = (
+            neemt_deel = (
             not pcs_startlijst_norm or
             any(_name_match(r['naam'], {n}) for n in pcs_startlijst_norm)
         )
