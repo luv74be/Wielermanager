@@ -20,6 +20,30 @@
 </head>
 <body>
   <!-- Sidebar -->
+  
+  // Sporza AT auto-refresh via browser
+async function sporzaClientRefresh() {
+  try {
+    const resp = await fetch('https://sporza.be/sso/refresh', {
+      credentials: 'include',
+      headers: { 'Accept': 'application/json' }
+    });
+    const cookies = document.cookie;
+    const match = cookies.match(/sporza-site_profile_at=([^;]+)/);
+    if (match) {
+      await fetch('/api/sporza-client-refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ at: match[1] })
+      });
+    }
+  } catch(e) {}
+}
+// Voer uit bij laden en daarna elke 30 minuten
+sporzaClientRefresh();
+setInterval(sporzaClientRefresh, 30 * 60 * 1000);
+
+  
   <script src="https://cdn.jsdelivr.net/npm/eruda/eruda.min.js"></script>
   <script>eruda.init();</script>
 
