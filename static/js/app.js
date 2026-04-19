@@ -2209,6 +2209,14 @@ async function renderKoersDetail() {
                   <input type="checkbox" id="det-ops-${r.id}" ${r.in_opstelling ? 'checked' : ''}
                     ${koers.afgelopen ? 'disabled' : `onchange="updateDetailOpstellingUI(${max})"`} />
                 </td>
+                <td style="text-align:center;font-size:0.88rem">
+                   ${deelnemerMap[r.id] === true
+                   ? '<span style="color:var(--green)">✓</span>'
+                   : deelnemerMap[r.id] === false
+                   ? '<span style="color:var(--red)">✗</span>'
+                   : '<span style="color:var(--muted)">—</span>'}
+                 </td>
+
                 <td style="padding-right:0">${avatarHtml(r)}</td>
                 <td class="fw-700" style="cursor:pointer" ondblclick="openRennerDetail(${r.id})">${r.naam}</td>
                 <td class="text-muted fs-sm"><span style="display:inline-flex;align-items:center;gap:5px">${jerseyHtml(r.renner_ploeg,{size:18})}${r.renner_ploeg}</span></td>
@@ -2478,7 +2486,10 @@ async function openUitslagPCS(kid) {
         <tbody>
           ${opstelling.map(r => `<tr>
             <td style="padding-right:0">${avatarHtml(r)}</td>
-            <td class="fw-700" style="cursor:pointer" ondblclick="openRennerDetail(${r.id})">${r.naam}${r.is_kopman ? ' ⭐' : ''}</td>
+            <td class="fw-700" style="cursor:pointer" ondblclick="openRennerDetail(${r.id})">${r.naam}${r.is_kopman ? ' ⭐' : ''}
+               ${r.neemt_deel === false ? ' <span style="color:var(--red);font-size:0.7rem">✗start</span>' : ''}
+             </td>
+
             <td style="text-align:center;color:var(--muted)">${r.positie ?? '—'}</td>
             <td style="text-align:right">${r.punten_basis || '—'}</td>
             <td style="text-align:right">${r.bonus_kopman > 0 ? `<span style="color:var(--accent)">+${r.bonus_kopman}</span>` : '—'}</td>
