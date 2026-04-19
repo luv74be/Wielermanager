@@ -4852,6 +4852,21 @@ Voeg dit blok NIET toe bij algemene vragen of analyses zonder specifieke wissel.
 
     conn.close()
     return jsonify({"text": clean_text, "transfer_suggestion": transfer_suggestion})
+# ── API: Client-side Sporza refresh ───────────────────────────────────────────
+
+@app.route("/api/sporza-client-refresh", methods=["POST"])
+def sporza_client_refresh():
+    """Ontvang een nieuwe AT cookie die de browser zelf heeft opgehaald via sporza.be/sso/refresh."""
+    data = request.get_json(silent=True) or {}
+    new_at = (data.get("at") or "").strip()
+    if not new_at:
+        return jsonify({"error": "Geen AT meegegeven"}), 400
+    conn = get_db()
+    sid = current_seizoen_id(conn)
+    _set_user_inst_val(conn, 'sporza_cookie', new_at, sid=sid)
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
 
 
 if __name__ == "__main__":
