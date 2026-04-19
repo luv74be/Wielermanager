@@ -2044,7 +2044,7 @@ async function renderKoersDetail() {
   const koers = state.koersen.find(k => k.id === kid);
   if (!koers) return '<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-title">Wedstrijd niet gevonden</div></div>';
 
-  const [opstellingData, resultaten, favorieten] = await const [opstellingData, resultaten, favorieten, deelnemersData] = await Promise.all([
+  const [opstellingData, resultaten, favorieten, deelnemersData] = await Promise.all([
     get(`/api/koersen/${kid}/opstelling`),
     get(`/api/koersen/${kid}/resultaten`),
     get(`/api/koersen/${kid}/favorieten`).catch(() => []),
