@@ -2044,11 +2044,17 @@ async function renderKoersDetail() {
   const koers = state.koersen.find(k => k.id === kid);
   if (!koers) return '<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-title">Wedstrijd niet gevonden</div></div>';
 
-  const [opstellingData, resultaten, favorieten] = await Promise.all([
+  const [opstellingData, resultaten, favorieten] = await const [opstellingData, resultaten, favorieten, deelnemersData] = await Promise.all([
     get(`/api/koersen/${kid}/opstelling`),
     get(`/api/koersen/${kid}/resultaten`),
     get(`/api/koersen/${kid}/favorieten`).catch(() => []),
+    koers.pcs_slug ? get(`/api/koersen/${kid}/deelnemers`).catch(() => null) : Promise.resolve(null),
   ]);
+  const deelnemerMap = {};
+  if (deelnemersData?.renners) {
+    deelnemersData.renners.forEach(r => { deelnemerMap[r.id] = r.bevestigd; });
+  }
+
 
   const max = opstellingData.max_opstelling;
   const renners = opstellingData.renners;
@@ -2194,6 +2200,7 @@ async function renderKoersDetail() {
               <th style="width:32px"></th>
               <th>Naam</th>
               <th class="text-muted" style="font-size:0.78rem">Ploeg</th>
+              <th style="width:44px;text-align:center">Start</th>
               <th style="width:60px;text-align:center">⭐</th>
             </tr></thead>
             <tbody>
