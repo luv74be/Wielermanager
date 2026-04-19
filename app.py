@@ -4552,17 +4552,26 @@ def get_stats():
     """, (uid, uid, sid)).fetchall()
 
     top_renners = conn.execute("""
-        SELECT re.id, re.naam, re.ploeg, re.rol, re.prijs,
-               SUM(r.punten) as punten
-        FROM resultaten r
-        JOIN renners re ON re.id = r.renner_id
-        JOIN opstelling o ON o.renner_id = r.renner_id AND o.koers_id = r.koers_id AND o.user_id = ?
-        WHERE r.user_id = ?
-          AND r.renner_id IN (SELECT renner_id FROM mijn_ploeg WHERE user_id = ? AND seizoen_id = ?)
-        GROUP BY r.renner_id
-        HAVING SUM(r.punten) > 0
-        ORDER BY punten DESC
-    """, (uid, uid, uid, sid)).fetchall()
+       SELECT re.id, re.naam, re.ploeg, re.rol, re.prijs,
+           SUM(r.punten) as punten,
+           CASE WHEN mp.renner_id IS NOT NULL THEN 1 ELSE 0 END as nog_in_ploeg
+    FROM resultaten r
+    JOIN renners re ON re.id = r.renner_id
+    JOIN opstelling o ON o.renner_id = r.renner_id AND o.koers_id = r.koers_id AND o.user_id = ?
+    LEFT JOIN mijn_ploeg mp ON mp.renner_id = r.renner_id AND mp.user_id = ? AND mp.seizoen_id = ?
+    WHERE r.user_id = ?
+      AND r.renner_id IN (
+          SELECT renner_id FROM mijn_ploeg WHERE user_id = ? AND seizoen_id = ?
+          UNION
+          SELECT renner_in_id FROM transfers WHERE user_id = ? AND seizoen_id = ?
+          UNION
+          SELECT renner_uit_id FROM transfers WHERE user_id = ? AND seizoen_id = ?
+      )
+    GROUP BY r.renner_id
+    HAVING SUM(r.punten) > 0
+    ORDER BY punten DESC
+""", (uid, uid, sid, uid, uid, sid, uid, sid, uid, sid)).fetchall()
+
 
     kopman_stats = conn.execute("""
         SELECT re.id, re.naam, re.ploeg, re.foto,
