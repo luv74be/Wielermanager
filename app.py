@@ -2894,6 +2894,13 @@ def add_resultaten_bulk(kid):
     kopman_id = next((r["renner_id"] for r in opstelling_rows if r["is_kopman"]), None)
 
     try:
+        # Verwijder eerst alle bestaande resultaten voor deze koers/user
+        # zodat getransfereerde renners geen oude punten behouden
+    conn.execute(
+    "DELETE FROM resultaten WHERE koers_id=? AND user_id=?",
+    (kid, uid)
+    )
+
         for r in data:
             rid = r["renner_id"]
             pos = r.get("positie")
