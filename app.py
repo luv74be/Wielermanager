@@ -2488,7 +2488,23 @@ def get_uitslag_pcs(kid):
     winnaar_ploeg_pcs = _norm(pcs_top30[0]['ploeg_pcs']) if pcs_top30 else ''
     soort = koers['soort']
 
+        # Haal startlijst op voor deelnamecheck ploegbonus
+    pcs_startlijst_norm = set()
+    try:
+        start_url = f"https://www.procyclingstats.com/race/{slug}/{year}/startlist"
+        start_resp = scraper.get(start_url, timeout=15)
+        if start_resp.status_code == 200:
+            start_soup = BeautifulSoup(start_resp.text, 'html.parser')
+            for a in start_soup.select('a[href^="rider/"]'):
+                href = a.get('href', '')
+                slug_part = href.replace('rider/', '').split('/')[0]
+                if slug_part:
+                    pcs_startlijst_norm.add(slug_part.replace('-', ' '))
+    except Exception:
+        pass
+
     matched = []
+
     for r in ploeg:
         pos = None
         for pcs in pcs_top30:
@@ -2511,10 +2527,15 @@ def get_uitslag_pcs(kid):
         bns_kop = kopman_bonus(pos) if pos and is_kop and in_ops else 0
 
         renner_ploeg_norm = _norm(r['renner_ploeg'])
+                neemt_deel = (
+            not pcs_startlijst_norm or
+            any(_name_match(r['naam'], {n}) for n in pcs_startlijst_norm)
+        )
         is_ploegmaat = bool(
-            winnaar_ploeg_pcs and pos != 1 and in_ops and
+            winnaar_ploeg_pcs and pos != 1 and in_ops and neemt_deel and
             _ploeg_match(winnaar_ploeg_pcs, renner_ploeg_norm)
         )
+
         bns_ploeg = 10 if is_ploegmaat else 0
 
         matched.append({
